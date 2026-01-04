@@ -5,6 +5,8 @@ import type { CallToolResult, TextContent, ToolAnnotations } from '@modelcontext
 /* eslint-enable n/no-missing-import */
 import { makeRestPutRequest, getPageUrl, formatEditComment } from '../common/utils.js';
 import type { MwRestApiPageObject } from '../types/mwRestApi.js';
+import { pipeline } from '../middleware/index.js';
+import type { EditContext } from '../middleware/types.js';
 
 export function updatePageTool( server: McpServer ): RegisteredTool {
 	return server.tool(
@@ -23,22 +25,26 @@ export function updatePageTool( server: McpServer ): RegisteredTool {
 		} as ToolAnnotations,
 		async (
 			{ title, source, latestId, comment }
-		) => handleUpdatePageTool( title, source, latestId, comment )
+		) => {
+			const context: EditContext = {
+				tool: 'update-page',
+				title,
+				source,
+				comment,
+				latestId
+			};
+			return pipeline.wrapHandler( context, handleUpdatePageToolWithContext );
+		}
 	);
 }
 
-async function handleUpdatePageTool(
-	title: string,
-	source: string,
-	latestId: number,
-	comment?: string
-): Promise<CallToolResult> {
+async function handleUpdatePageToolWithContext( context: EditContext ): Promise<CallToolResult> {
 	let data: MwRestApiPageObject;
 	try {
-		data = await makeRestPutRequest<MwRestApiPageObject>( `/v1/page/${ encodeURIComponent( title ) }`, {
-			source: source,
-			comment: formatEditComment( 'update-page', comment ),
-			latest: { id: latestId }
+		data = await makeRestPutRequest<MwRestApiPageObject>( `/v1/page/${ encodeURIComponent( context.title ) }`, {
+			source: context.source,
+			comment: formatEditComment( 'update-page', context.comment ),
+			latest: { id: context.latestId }
 		}, true );
 	} catch ( error ) {
 		return {

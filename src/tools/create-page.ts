@@ -5,6 +5,8 @@ import type { CallToolResult, TextContent, ToolAnnotations } from '@modelcontext
 /* eslint-enable n/no-missing-import */
 import { makeRestPostRequest, getPageUrl, formatEditComment } from '../common/utils.js';
 import type { MwRestApiPageObject } from '../types/mwRestApi.js';
+import { pipeline } from '../middleware/index.js';
+import type { EditContext } from '../middleware/types.js';
 
 export function createPageTool( server: McpServer ): RegisteredTool {
 	return server.tool(
@@ -23,25 +25,29 @@ export function createPageTool( server: McpServer ): RegisteredTool {
 		} as ToolAnnotations,
 		async (
 			{ source, title, comment, contentModel }
-		) => handleCreatePageTool( source, title, comment, contentModel )
+		) => {
+			const context: EditContext = {
+				tool: 'create-page',
+				title,
+				source,
+				comment,
+				contentModel
+			};
+			return pipeline.wrapHandler( context, handleCreatePageToolWithContext );
+		}
 	);
 }
 
-async function handleCreatePageTool(
-	source: string,
-	title: string,
-	comment?: string,
-	contentModel?: string
-): Promise<CallToolResult> {
+async function handleCreatePageToolWithContext( context: EditContext ): Promise<CallToolResult> {
 	let data: MwRestApiPageObject;
 
 	try {
 		data = await makeRestPostRequest<MwRestApiPageObject>( '/v1/page', {
-			source: source,
-			title: title,
-			comment: formatEditComment( 'create-page', comment ),
+			source: context.source,
+			title: context.title,
+			comment: formatEditComment( 'create-page', context.comment ),
 			// eslint-disable-next-line camelcase
-			content_model: contentModel
+			content_model: context.contentModel
 		}, true );
 	} catch ( error ) {
 		return {
