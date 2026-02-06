@@ -12,7 +12,8 @@ const EXEMPT_NAMESPACES = [
 	'Talk',
 	'User',
 	'MediaWiki',
-	'Special'
+	'Special',
+	'PickiPedia'  // Bot config and meta pages
 ];
 
 /**
