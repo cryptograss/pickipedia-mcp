@@ -55,17 +55,45 @@ function normalizeLine( line: string ): string {
 }
 
 /**
- * Build a set of normalized lines from content for quick lookup.
+ * Build a set of normalized paragraphs from content for quick lookup.
+ * Handles multi-line paragraphs by joining consecutive non-markup lines.
  */
 function buildLineSet( source: string ): Set<string> {
 	const lines = source.split( '\n' );
 	const set = new Set<string>();
+	let currentParagraph: string[] = [];
+
+	const flushParagraph = () => {
+		if ( currentParagraph.length > 0 ) {
+			const text = currentParagraph.join( ' ' ).trim();
+			const normalized = normalizeLine( text );
+			if ( normalized ) {
+				set.add( normalized );
+			}
+			currentParagraph = [];
+		}
+	};
+
 	for ( const line of lines ) {
-		const normalized = normalizeLine( line );
-		if ( normalized ) {
-			set.add( normalized );
+		if ( isNonWrappableLine( line ) ) {
+			flushParagraph();
+			// Don't add markup lines to the set
+		} else if ( isListItem( line ) ) {
+			flushParagraph();
+			// Add list item content
+			const match = line.trim().match( /^[*#:;]+\s*(.*)$/ );
+			if ( match && match[ 1 ] ) {
+				const normalized = normalizeLine( match[ 1 ] );
+				if ( normalized ) {
+					set.add( normalized );
+				}
+			}
+		} else {
+			currentParagraph.push( line );
 		}
 	}
+
+	flushParagraph();
 	return set;
 }
 
