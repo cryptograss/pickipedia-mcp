@@ -13,6 +13,8 @@ const EXEMPT_NAMESPACES = [
 	'User',
 	'MediaWiki',
 	'Special',
+	'Module',
+	'Form',
 	'PickiPedia'  // Bot config and meta pages
 ];
 
