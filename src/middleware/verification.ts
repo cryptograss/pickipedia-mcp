@@ -1,6 +1,11 @@
 import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
 import type { Middleware, EditContext } from './types.js';
-import { makeRestGetRequest } from '../common/utils.js';
+// Imported lazily inside fetchRevisionSource(). Statically, this module sits in
+// a cycle — verification -> common/utils -> server -> middleware/index ->
+// verification — which only initialises correctly when the app's own entry
+// point happens to load first. Deferring it breaks the cycle and lets this
+// module be imported on its own, which the wrapper tests rely on.
+import type { makeRestGetRequest as MakeRestGetRequest } from '../common/utils.js';
 import type { MwRestApiRevisionObject } from '../types/mwRestApi.js';
 
 /**
@@ -23,6 +28,8 @@ const EXEMPT_NAMESPACES = [
  */
 async function fetchRevisionSource( revisionId: number ): Promise<string | null> {
 	try {
+		const { makeRestGetRequest } = await import( '../common/utils.js' ) as
+			{ makeRestGetRequest: typeof MakeRestGetRequest };
 		const data = await makeRestGetRequest<MwRestApiRevisionObject>(
 			`/v1/revision/${ revisionId }/bare`
 		);
@@ -235,11 +242,133 @@ function isNonWrappableLine( line: string ): boolean {
 		trimmed.startsWith( '==' ) || // Headings
 		trimmed.startsWith( '[[Category:' ) ||
 		trimmed.startsWith( '{{' ) || // Templates
+		trimmed === '}}' || // Template close on its own line
 		trimmed.startsWith( '|}' ) || // Table end
 		trimmed.startsWith( '{|' ) || // Table start
 		trimmed.startsWith( '|' ) || // Table row
 		trimmed.startsWith( '!' ) // Table header
 	);
+}
+
+/**
+ * Tags whose contents are verbatim wikitext and must never be rewritten.
+ * ASCII art in <pre> is the case that keeps biting us.
+ */
+const PROTECTED_TAGS = [ 'pre', 'nowiki', 'syntaxhighlight', 'source', 'poem', 'math' ];
+
+/**
+ * Open/close matchers per protected tag, compiled once from the constant list
+ * above rather than rebuilt per line.
+ */
+const PROTECTED_TAG_PATTERNS: { tag: string; open: RegExp; close: RegExp }[] =
+	PROTECTED_TAGS.map( ( tag ) => ( {
+		tag,
+		// eslint-disable-next-line security/detect-non-literal-regexp -- built from the constant list above
+		open: new RegExp( `<${ tag }(\\s[^>]*)?>`, 'i' ),
+		// eslint-disable-next-line security/detect-non-literal-regexp -- built from the constant list above
+		close: new RegExp( `</${ tag }\\s*>`, 'i' )
+	} ) );
+
+/**
+ * Count non-overlapping occurrences of a substring.
+ *
+ * @param {string} haystack String to search.
+ * @param {string} needle Substring to count.
+ * @return {number} Number of occurrences.
+ */
+function countOccurrences( haystack: string, needle: string ): number {
+	return haystack.split( needle ).length - 1;
+}
+
+/**
+ * If this line opens a protected tag it doesn't also close, return the tag name.
+ *
+ * @param {string} line Single line of wikitext.
+ * @return {string|null} Tag name left open by this line, or null.
+ */
+function openedProtectedTag( line: string ): string | null {
+	for ( const { tag, open, close } of PROTECTED_TAG_PATTERNS ) {
+		if ( open.test( line ) && !close.test( line ) ) {
+			return tag;
+		}
+	}
+	return null;
+}
+
+/**
+ * Closing matcher for a tag known to be in PROTECTED_TAGS.
+ *
+ * @param {string} tag Tag name.
+ * @return {RegExp} Matcher for that tag's closing form.
+ */
+function closingPatternFor( tag: string ): RegExp {
+	const entry = PROTECTED_TAG_PATTERNS.find( ( p ) => p.tag === tag );
+	// Every caller passes a tag that came out of openedProtectedTag().
+	return entry!.close;
+}
+
+/**
+ * Mark lines that belong to a multi-line region and must be passed through
+ * untouched.
+ *
+ * isNonWrappableLine() judges each line on its own, which is fine for a
+ * heading or a table row but wrong for anything spanning lines. Two cases
+ * broke real pages:
+ *
+ * - Content inside <pre> looks like prose line by line, so ASCII art was
+ *   wrapped and destroyed.
+ * - A template parameter whose value runs over several lines (say
+ *   `| image = <pre>` with art beneath it) got a {{Bot_proposes}} injected
+ *   into the middle of the template call, which shattered the whole
+ *   infobox — see Cryptograss:Delivery-kid.
+ *
+ * A bare `}}` closing line is prose by the line-at-a-time test too, and
+ * wrapping that swallows it into the parameter, where it closes the
+ * Bot_proposes call early and spills the rest as literal text.
+ *
+ * @param {string[]} lines Source split on newlines.
+ * @return {boolean[]} Array parallel to `lines`; true means "leave this line alone".
+ */
+export function computeProtectedLines( lines: string[] ): boolean[] {
+	const protectedLines: boolean[] = new Array( lines.length ).fill( false );
+	let openTag: string | null = null;
+	let braceDepth = 0;
+
+	for ( let i = 0; i < lines.length; i++ ) {
+		const line = lines[ i ];
+
+		// Inside <pre> and friends, through and including the closing tag.
+		if ( openTag ) {
+			protectedLines[ i ] = true;
+			if ( closingPatternFor( openTag ).test( line ) ) {
+				openTag = null;
+			}
+			continue;
+		}
+
+		// Inside an unclosed template, through and including the line that
+		// finally balances the braces.
+		if ( braceDepth > 0 ) {
+			protectedLines[ i ] = true;
+		}
+
+		const opened = openedProtectedTag( line );
+		if ( opened ) {
+			protectedLines[ i ] = true;
+			openTag = opened;
+		}
+
+		braceDepth += countOccurrences( line, '{{' ) - countOccurrences( line, '}}' );
+		if ( braceDepth < 0 ) {
+			// Unbalanced source; don't let a stray }} protect the rest of the page.
+			braceDepth = 0;
+		}
+		if ( braceDepth > 0 ) {
+			protectedLines[ i ] = true;
+		}
+	}
+
+	return protectedLines;
 }
 
 /**
@@ -297,8 +426,9 @@ function wrapListItemContent( line: string, existingLines?: Set<string> ): strin
  * Wrap prose paragraphs and list items with Bot_proposes.
  * Only wraps content that is NOT in the existingLines set (i.e., new or changed content).
  */
-function wrapProseWithBotProposes( source: string, existingLines?: Set<string> ): string {
+export function wrapProseWithBotProposes( source: string, existingLines?: Set<string> ): string {
 	const lines = source.split( '\n' );
+	const protectedLines = computeProtectedLines( lines );
 	const result: string[] = [];
 	let currentParagraph: string[] = [];
 
@@ -323,9 +453,10 @@ function wrapProseWithBotProposes( source: string, existingLines?: Set<string> )
 		}
 	};
 
-	for ( const line of lines ) {
-		if ( isNonWrappableLine( line ) ) {
-			// Headings, categories, templates, tables - don't wrap
+	for ( let i = 0; i < lines.length; i++ ) {
+		const line = lines[ i ];
+		if ( protectedLines[ i ] || isNonWrappableLine( line ) ) {
+			// Multi-line regions, headings, categories, templates, tables - don't wrap
 			flushParagraph();
 			result.push( line );
 		} else if ( isListItem( line ) ) {
