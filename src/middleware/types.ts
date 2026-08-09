@@ -1,3 +1,4 @@
+/* eslint-disable n/no-missing-import */
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 /**
@@ -10,7 +11,7 @@ export interface EditContext {
 	source: string;
 	comment?: string;
 	contentModel?: string;
-	latestId?: number;  // For updates
+	latestId?: number; // For updates
 }
 
 /**
