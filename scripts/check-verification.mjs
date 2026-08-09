@@ -8,8 +8,11 @@
  * they're worth keeping honest.
  */
 
+import { readFile } from 'node:fs/promises';
 import { wrapProseWithBotProposes, computeProtectedLines, buildLineSet } from
 	'../dist/middleware/verification.js';
+import { ContentFormat, getSubEndpoint } from
+	'../dist/common/mwRestApiContentFormat.js';
 
 let failures = 0;
 
@@ -128,6 +131,27 @@ check( 'unchanged prose after infobox not re-wrapped',
 	!infoboxTrip.includes( '{{Bot_proposes|Verified prose after' ), infoboxTrip );
 check( 'new claim after infobox IS wrapped',
 	infoboxTrip.includes( '{{Bot_proposes|Another new claim.' ), infoboxTrip );
+
+// pickipedia#43's root cause was not the wrapping logic at all — it was asking
+// the wrong REST endpoint for the previous revision. `/v1/revision/{id}/bare`
+// returns metadata with no `source` field, so the fetch always resolved to
+// null, the diff was always skipped, and every edit re-wrapped the whole page.
+// It failed silently for months. Assert the endpoint directly.
+console.log( '\nPrevious-revision endpoint:' );
+// tsc keeps JSDoc, and the comment on fetchRevisionSource names the bad
+// endpoint on purpose. Strip comments so this reads code, not prose.
+const compiled = ( await readFile(
+	new URL( '../dist/middleware/verification.js', import.meta.url ), 'utf8'
+) ).replace( /\/\*[\s\S]*?\*\//g, '' ).replace( /^\s*\/\/.*$/gm, '' );
+check( 'does not request the bare (metadata-only) revision endpoint',
+	!/\/bare/.test( compiled ),
+	'`/bare` omits `source`; the diff silently degrades to wrapping everything' );
+check( 'still requests a revision endpoint',
+	/v1\/revision\//.test( compiled ) );
+check( 'source endpoint resolves to the empty suffix',
+	getSubEndpoint( ContentFormat.source ) === '' &&
+	getSubEndpoint( ContentFormat.none ) === '/bare',
+	`source=${ JSON.stringify( getSubEndpoint( ContentFormat.source ) ) }` );
 
 console.log( '\nDirect region marking:' );
 const marks = computeProtectedLines( [ 'plain', '{{T', '| x = 1', '}}', 'plain again' ] );

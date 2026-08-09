@@ -6,6 +6,8 @@ import type { Middleware, EditContext } from './types.js';
 // point happens to load first. Deferring it breaks the cycle and lets this
 // module be imported on its own, which the wrapper tests rely on.
 import type { makeRestGetRequest as MakeRestGetRequest } from '../common/utils.js';
+// Leaf module, no imports of its own, so this one is safe to take statically.
+import { ContentFormat, getSubEndpoint } from '../common/mwRestApiContentFormat.js';
 import type { MwRestApiRevisionObject } from '../types/mwRestApi.js';
 
 /**
@@ -25,15 +27,32 @@ const EXEMPT_NAMESPACES = [
 
 /**
  * Fetch the source content of a revision.
+ *
+ * The endpoint comes from getSubEndpoint() rather than a literal, because the
+ * literal is what went wrong: this asked for `/v1/revision/{id}/bare`, which
+ * getSubEndpoint maps to ContentFormat.none — metadata, no `source` at all. So
+ * every call yielded null, the caller read that as "no previous revision
+ * available", and fell back to wrapping the whole page. That is precisely the
+ * bug reported in pickipedia#43: an edit adding one template marked every
+ * pre-existing paragraph unverified.
  */
 async function fetchRevisionSource( revisionId: number ): Promise<string | null> {
 	try {
 		const { makeRestGetRequest } = await import( '../common/utils.js' ) as
 			{ makeRestGetRequest: typeof MakeRestGetRequest };
 		const data = await makeRestGetRequest<MwRestApiRevisionObject>(
-			`/v1/revision/${ revisionId }/bare`
+			`/v1/revision/${ revisionId }${ getSubEndpoint( ContentFormat.source ) }`
 		);
-		return data.source ?? null;
+		if ( typeof data.source !== 'string' ) {
+			// Don't let this fail quietly again. A diff we can't compute is a
+			// page we're about to re-wrap wholesale.
+			console.error(
+				`[verification] Revision ${ revisionId } came back without source; ` +
+				`keys: ${ Object.keys( data ).join( ', ' ) }`
+			);
+			return null;
+		}
+		return data.source;
 	} catch ( error ) {
 		console.error( `[verification] Failed to fetch revision ${ revisionId }: ${ error }` );
 		return null;
