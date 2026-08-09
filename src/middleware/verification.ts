@@ -1,3 +1,4 @@
+/* eslint-disable n/no-missing-import */
 import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
 import type { Middleware, EditContext } from './types.js';
 // Imported lazily inside fetchRevisionSource(). Statically, this module sits in
@@ -22,7 +23,7 @@ const EXEMPT_NAMESPACES = [
 	'Special',
 	'Module',
 	'Form',
-	'PickiPedia'  // Bot config and meta pages
+	'PickiPedia' // Bot config and meta pages
 ];
 
 /**
@@ -35,6 +36,9 @@ const EXEMPT_NAMESPACES = [
  * available", and fell back to wrapping the whole page. That is precisely the
  * bug reported in pickipedia#43: an edit adding one template marked every
  * pre-existing paragraph unverified.
+ *
+ * @param {number} revisionId Revision to fetch.
+ * @return {Promise<string|null>} Wikitext, or null if it could not be fetched.
  */
 async function fetchRevisionSource( revisionId: number ): Promise<string | null> {
 	try {
@@ -62,6 +66,9 @@ async function fetchRevisionSource( revisionId: number ): Promise<string | null>
 /**
  * Strip Bot_proposes wrapper from a line to get the original content.
  * Used for comparing old vs new content.
+ *
+ * @param {string} text Possibly-wrapped text.
+ * @return {string} Text with the wrapper and its pipe escapes removed.
  */
 function stripBotProposes( text: string ): string {
 	// Match {{Bot_proposes|content|by=...}} and extract the content
@@ -77,6 +84,9 @@ function stripBotProposes( text: string ): string {
 /**
  * Normalize a line for comparison purposes.
  * Strips Bot_proposes wrappers and normalizes whitespace.
+ *
+ * @param {string} line Line to normalize.
+ * @return {string} Comparable form of the line.
  */
 function normalizeLine( line: string ): string {
 	return stripBotProposes( line.trim() ).trim();
@@ -102,7 +112,7 @@ export function buildLineSet( source: string ): Set<string> {
 	const set = new Set<string>();
 	let currentParagraph: string[] = [];
 
-	const flushParagraph = () => {
+	const flushParagraph = (): void => {
 		if ( currentParagraph.length > 0 ) {
 			const text = currentParagraph.join( ' ' ).trim();
 			const normalized = normalizeLine( text );
@@ -139,6 +149,9 @@ export function buildLineSet( source: string ): Set<string> {
 
 /**
  * Check if a page title is in an exempt namespace.
+ *
+ * @param {string} title Full page title, namespace prefix included.
+ * @return {boolean} True if edits to this page skip verification.
  */
 function isExemptNamespace( title: string ): boolean {
 	// Check for talk pages (any namespace ending in _talk)
@@ -153,9 +166,10 @@ function isExemptNamespace( title: string ): boolean {
 		return false;
 	}
 
-	const namespace = title.substring( 0, colonIndex );
-	return EXEMPT_NAMESPACES.some( ns =>
-		namespace.toLowerCase() === ns.toLowerCase()
+	// colonIndex is never -1 here; the early return above handles that.
+	const namespace = title.slice( 0, colonIndex );
+	return EXEMPT_NAMESPACES.some(
+		( ns ) => namespace.toLowerCase() === ns.toLowerCase()
 	);
 }
 
@@ -163,6 +177,11 @@ function isExemptNamespace( title: string ): boolean {
  * Templates that support the status parameter.
  * When content starts with one of these, we inject status=proposed.
  */
+// These names are interpolated into RegExp sources below. That is only safe
+// because this list is a literal — nothing here comes from a page, a tool
+// argument, or config. If it ever becomes user-supplied, escape it first; the
+// security/detect-non-literal-regexp suppressions below are justified solely
+// by this array being hardcoded.
 const TEMPLATES_WITH_STATUS = [
 	'Show',
 	'Venue',
@@ -173,25 +192,11 @@ const TEMPLATES_WITH_STATUS = [
 ];
 
 /**
- * Check if content already has verification markers.
- */
-function hasVerificationMarkers( source: string ): boolean {
-	// Check for Bot_proposes template
-	if ( /\{\{Bot_proposes/i.test( source ) ) {
-		return true;
-	}
-
-	// Check for status=proposed or status=unverified
-	if ( /\|\s*status\s*=\s*(proposed|unverified)/i.test( source ) ) {
-		return true;
-	}
-
-	return false;
-}
-
-/**
  * Check if a line/text has already been verified (not just proposed).
  * Verified content should not be re-wrapped.
+ *
+ * @param {string} text Text to inspect.
+ * @return {boolean} True if a human has already attested to this.
  */
 function isAlreadyVerified( text: string ): boolean {
 	// Check for {{verified|...}} or {{source|...}} templates
@@ -201,10 +206,14 @@ function isAlreadyVerified( text: string ): boolean {
 /**
  * Check if content uses a template that supports status parameter.
  * Returns the template name if found, null otherwise.
+ *
+ * @param {string} source Wikitext to inspect.
+ * @return {string|null} Template name, or null if none of them opens the page.
  */
 function getTemplateWithStatus( source: string ): string | null {
 	for ( const template of TEMPLATES_WITH_STATUS ) {
 		// Match {{Template at start of content (with optional whitespace)
+		// eslint-disable-next-line security/detect-non-literal-regexp -- hardcoded list
 		const regex = new RegExp( `^\\s*\\{\\{${ template }\\s*[\\n|]`, 'i' );
 		if ( regex.test( source ) ) {
 			return template;
@@ -215,9 +224,14 @@ function getTemplateWithStatus( source: string ): string | null {
 
 /**
  * Check if a specific template already has status=proposed.
+ *
+ * @param {string} source Wikitext to inspect.
+ * @param {string} template Template name to look for.
+ * @return {boolean} True if that template already carries status=proposed.
  */
 function templateHasProposedStatus( source: string, template: string ): boolean {
 	// Look for the template followed eventually by |status=proposed before the closing }}
+	// eslint-disable-next-line security/detect-non-literal-regexp -- hardcoded list
 	const regex = new RegExp(
 		`\\{\\{${ template }[^}]*\\|\\s*status\\s*=\\s*proposed`,
 		'i'
@@ -227,6 +241,10 @@ function templateHasProposedStatus( source: string, template: string ): boolean 
 
 /**
  * Inject status=proposed into a template at the start of content.
+ *
+ * @param {string} source Wikitext beginning with the template.
+ * @param {string} template Template name to inject into.
+ * @return {string} Source with status=proposed added, or unchanged if present.
  */
 function injectTemplateStatus( source: string, template: string ): string {
 	// Check if this specific template already has status=proposed
@@ -234,12 +252,18 @@ function injectTemplateStatus( source: string, template: string ): string {
 		return source; // Already has it, don't double-inject
 	}
 	// Insert status=proposed after the template opening
+	// eslint-disable-next-line security/detect-non-literal-regexp -- hardcoded list
 	const regex = new RegExp( `(^\\s*\\{\\{${ template }\\s*\\n)`, 'i' );
-	return source.replace( regex, `$1|status=proposed\n` );
+	return source.replace( regex, '$1|status=proposed\n' );
 }
 
 /**
  * Find the end of a template block (matching closing }}).
+ *
+ * @param {string} source Wikitext to scan.
+ * @param {number} startIndex Index of the opening braces.
+ * @return {number} Index just past the closing braces, or the end of source
+ *   if the template is never closed.
  */
 function findTemplateEnd( source: string, startIndex: number ): number {
 	let depth = 0;
@@ -265,6 +289,9 @@ function findTemplateEnd( source: string, startIndex: number ): number {
 /**
  * Check if a line is wikitext markup that shouldn't be wrapped at all.
  * Note: List items (*, #) are handled separately - their content gets wrapped.
+ *
+ * @param {string} line Line to judge, in isolation.
+ * @return {boolean} True if the line is markup rather than prose.
  */
 function isNonWrappableLine( line: string ): boolean {
 	const trimmed = line.trim();
@@ -404,6 +431,9 @@ export function computeProtectedLines( lines: string[] ): boolean[] {
 
 /**
  * Check if a line is a list item (bullet or numbered).
+ *
+ * @param {string} line Line to check.
+ * @return {boolean} True if the line opens with a list marker.
  */
 function isListItem( line: string ): boolean {
 	const trimmed = line.trim();
@@ -419,6 +449,11 @@ function isListItem( line: string ): boolean {
  * Wrap the content of a list item with Bot_proposes.
  * Preserves the list prefix (* or # etc) and wraps the rest.
  * Only wraps if the content is not in the existingLines set.
+ *
+ * @param {string} line List-item line.
+ * @param {Set<string>} [existingLines] Content from the previous revision;
+ *   anything found here is left alone.
+ * @return {string} The line, wrapped if its content is new.
  */
 function wrapListItemContent( line: string, existingLines?: Set<string> ): string {
 	const trimmed = line.trim();
@@ -456,6 +491,12 @@ function wrapListItemContent( line: string, existingLines?: Set<string> ): strin
 /**
  * Wrap prose paragraphs and list items with Bot_proposes.
  * Only wraps content that is NOT in the existingLines set (i.e., new or changed content).
+ *
+ * @param {string} source Wikitext being saved.
+ * @param {Set<string>} [existingLines] Content from the previous revision, as
+ *   built by buildLineSet(). Omit it and every paragraph is treated as new,
+ *   which is what pickipedia#43 looked like from the outside.
+ * @return {string} Source with new prose wrapped.
  */
 export function wrapProseWithBotProposes( source: string, existingLines?: Set<string> ): string {
 	const lines = source.split( '\n' );
@@ -463,7 +504,7 @@ export function wrapProseWithBotProposes( source: string, existingLines?: Set<st
 	const result: string[] = [];
 	let currentParagraph: string[] = [];
 
-	const flushParagraph = () => {
+	const flushParagraph = (): void => {
 		if ( currentParagraph.length > 0 ) {
 			const text = currentParagraph.join( ' ' ).trim();
 			if ( text && !text.startsWith( '{{Bot_proposes' ) && !isAlreadyVerified( text ) ) {
@@ -507,6 +548,10 @@ export function wrapProseWithBotProposes( source: string, existingLines?: Set<st
 /**
  * Apply verification to content.
  * If existingLines is provided, only new/changed content gets wrapped.
+ *
+ * @param {string} source Wikitext being saved.
+ * @param {Set<string>} [existingLines] Content from the previous revision.
+ * @return {string} Source with status=proposed and/or Bot_proposes applied.
  */
 function applyVerification( source: string, existingLines?: Set<string> ): string {
 	const template = getTemplateWithStatus( source );
@@ -519,9 +564,12 @@ function applyVerification( source: string, existingLines?: Set<string> ): strin
 		const templateStart = modified.search( /\{\{/i );
 		if ( templateStart !== -1 ) {
 			const templateEnd = findTemplateEnd( modified, templateStart );
-			const beforeTemplate = modified.substring( 0, templateStart );
-			const templateContent = modified.substring( templateStart, templateEnd );
-			const afterTemplate = modified.substring( templateEnd );
+			// Both offsets are non-negative here: templateStart is guarded
+			// above, and findTemplateEnd only ever returns an index or the
+			// length of the source.
+			const beforeTemplate = modified.slice( 0, templateStart );
+			const templateContent = modified.slice( templateStart, templateEnd );
+			const afterTemplate = modified.slice( templateEnd );
 
 			// Wrap any prose after the template
 			if ( afterTemplate.trim() ) {

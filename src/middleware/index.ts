@@ -1,3 +1,4 @@
+/* eslint-disable n/no-missing-import */
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { Middleware, EditContext } from './types.js';
 import { verificationMiddleware } from './verification.js';
@@ -11,15 +12,23 @@ import { verificationMiddleware } from './verification.js';
 class MiddlewarePipeline {
 	private middlewares: Middleware[] = [];
 
-	register( middleware: Middleware ): void {
+	/**
+	 * Add a middleware to the end of the pipeline.
+	 *
+	 * @param {Middleware} middleware Middleware to append.
+	 */
+	public register( middleware: Middleware ): void {
 		this.middlewares.push( middleware );
 		console.error( `[middleware] Registered: ${ middleware.name }` );
 	}
 
 	/**
 	 * Run all onInput transforms in order.
+	 *
+	 * @param {EditContext} context Edit about to be sent to the wiki.
+	 * @return {Promise<EditContext>} Context after every transform has run.
 	 */
-	async processInput( context: EditContext ): Promise<EditContext> {
+	public async processInput( context: EditContext ): Promise<EditContext> {
 		let current = context;
 		for ( const mw of this.middlewares ) {
 			if ( mw.onInput ) {
@@ -31,11 +40,17 @@ class MiddlewarePipeline {
 
 	/**
 	 * Run all onOutput transforms in reverse order.
+	 *
+	 * @param {EditContext} context Context the handler ran with.
+	 * @param {CallToolResult} result Result returned by the tool handler.
+	 * @return {Promise<CallToolResult>} Result after every transform has run.
 	 */
-	async processOutput( context: EditContext, result: CallToolResult ): Promise<CallToolResult> {
+	public async processOutput(
+		context: EditContext, result: CallToolResult
+	): Promise<CallToolResult> {
 		let current = result;
 		for ( let i = this.middlewares.length - 1; i >= 0; i-- ) {
-			const mw = this.middlewares[i];
+			const mw = this.middlewares[ i ];
 			if ( mw.onOutput ) {
 				current = await mw.onOutput( context, current );
 			}
@@ -45,8 +60,12 @@ class MiddlewarePipeline {
 
 	/**
 	 * Convenience method to wrap a tool handler with middleware.
+	 *
+	 * @param {EditContext} context Edit to run through the pipeline.
+	 * @param {Function} handler Tool handler, called with the transformed context.
+	 * @return {Promise<CallToolResult>} Handler's result, transformed on the way out.
 	 */
-	async wrapHandler<T extends CallToolResult>(
+	public async wrapHandler<T extends CallToolResult>(
 		context: EditContext,
 		handler: ( ctx: EditContext ) => Promise<T>
 	): Promise<CallToolResult> {
