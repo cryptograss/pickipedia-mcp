@@ -153,6 +153,30 @@ check( 'source endpoint resolves to the empty suffix',
 	getSubEndpoint( ContentFormat.none ) === '/bare',
 	`source=${ JSON.stringify( getSubEndpoint( ContentFormat.source ) ) }` );
 
+// The edit from the bug report itself, replayed. Fixtures are revision 1982 of
+// "Water tower" (the state before) and the source Magent submitted as revision
+// 1983 — reconstructed by unwrapping what the middleware actually saved. That
+// edit added one {{Ensemble}} template and nothing else, yet it came back with
+// all five pre-existing paragraphs marked unverified.
+console.log( '\npickipedia#43, replayed:' );
+const fixture = ( name ) => readFile(
+	new URL( `./fixtures/pickipedia-43-${ name }.wikitext`, import.meta.url ), 'utf8'
+);
+const [ prevRev, submitted ] = await Promise.all( [ fixture( 'previous' ), fixture( 'edit' ) ] );
+const replayed = wrapProseWithBotProposes( submitted, buildLineSet( prevRev ) );
+
+check( 'adding one template wraps nothing else',
+	!replayed.includes( '{{Bot_proposes' ),
+	replayed );
+check( 'no pipes mangled to {{!}}',
+	!replayed.includes( '{{!}}' ),
+	replayed );
+check( 'output is byte-identical to what the bot submitted',
+	replayed === submitted.replace( /\n$/, '' ) || replayed === submitted,
+	`lengths ${ replayed.length } vs ${ submitted.length }` );
+check( 'and without the diff it reproduces the reported damage',
+	( wrapProseWithBotProposes( submitted ).match( /\{\{Bot_proposes\|/g ) || [] ).length === 5 );
+
 console.log( '\nDirect region marking:' );
 const marks = computeProtectedLines( [ 'plain', '{{T', '| x = 1', '}}', 'plain again' ] );
 check( 'template body and closer marked, plain lines not',
