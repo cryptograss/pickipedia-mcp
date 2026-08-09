@@ -8,7 +8,7 @@
  * they're worth keeping honest.
  */
 
-import { wrapProseWithBotProposes, computeProtectedLines } from
+import { wrapProseWithBotProposes, computeProtectedLines, buildLineSet } from
 	'../dist/middleware/verification.js';
 
 let failures = 0;
@@ -89,6 +89,45 @@ const unclosedOut = wrapProseWithBotProposes(
 );
 check( 'unclosed template protects rather than mangles',
 	!unclosedOut.includes( '{{Bot_proposes' ), unclosedOut );
+
+// buildLineSet() and wrapProseWithBotProposes() are two halves of one
+// comparison. If they segment paragraphs differently, the lookup misses and
+// unchanged prose is re-marked unverified — pickipedia#43.
+console.log( '\nDiff round-trip across a <pre> block:' );
+const previousRevision = `Verified prose above the block.
+
+<pre>
+ ___  ___
+|   ||   |
+</pre>
+
+Verified prose below the block.`;
+
+const editedRevision = previousRevision + '\n\nA brand new claim just added.';
+const roundTrip = wrapProseWithBotProposes( editedRevision, buildLineSet( previousRevision ) );
+
+check( 'unchanged prose above <pre> not re-wrapped',
+	roundTrip.includes( 'Verified prose above the block.' ) &&
+	!roundTrip.includes( '{{Bot_proposes|Verified prose above' ), roundTrip );
+check( 'unchanged prose below <pre> not re-wrapped',
+	!roundTrip.includes( '{{Bot_proposes|Verified prose below' ), roundTrip );
+check( 'newly added prose IS wrapped',
+	roundTrip.includes( '{{Bot_proposes|A brand new claim just added.' ), roundTrip );
+check( 'art still intact after a diff-aware pass', roundTrip.includes( '|   ||   |' ) );
+
+console.log( '\nDiff round-trip across a multi-line template:' );
+const prevInfobox = `{{Infobox resource
+| role = the distributor
+}}
+
+Verified prose after the infobox.`;
+const editedInfobox = prevInfobox + '\n\nAnother new claim.';
+const infoboxTrip = wrapProseWithBotProposes( editedInfobox, buildLineSet( prevInfobox ) );
+
+check( 'unchanged prose after infobox not re-wrapped',
+	!infoboxTrip.includes( '{{Bot_proposes|Verified prose after' ), infoboxTrip );
+check( 'new claim after infobox IS wrapped',
+	infoboxTrip.includes( '{{Bot_proposes|Another new claim.' ), infoboxTrip );
 
 console.log( '\nDirect region marking:' );
 const marks = computeProtectedLines( [ 'plain', '{{T', '| x = 1', '}}', 'plain again' ] );

@@ -66,9 +66,20 @@ function normalizeLine( line: string ): string {
 /**
  * Build a set of normalized paragraphs from content for quick lookup.
  * Handles multi-line paragraphs by joining consecutive non-markup lines.
+ *
+ * Segmentation here MUST match wrapProseWithBotProposes() exactly, protected
+ * regions included. The two functions are the halves of one comparison: this
+ * builds what the previous revision said, that decides what is new. Split a
+ * paragraph differently on either side and the lookup misses, so unchanged
+ * prose gets re-wrapped and previously-verified content silently reverts to
+ * unverified — the complaint in pickipedia#43.
+ *
+ * @param {string} source Wikitext to index.
+ * @return {Set<string>} Normalized paragraph and list-item text.
  */
-function buildLineSet( source: string ): Set<string> {
+export function buildLineSet( source: string ): Set<string> {
 	const lines = source.split( '\n' );
+	const protectedLines = computeProtectedLines( lines );
 	const set = new Set<string>();
 	let currentParagraph: string[] = [];
 
@@ -83,8 +94,9 @@ function buildLineSet( source: string ): Set<string> {
 		}
 	};
 
-	for ( const line of lines ) {
-		if ( isNonWrappableLine( line ) ) {
+	for ( let i = 0; i < lines.length; i++ ) {
+		const line = lines[ i ];
+		if ( protectedLines[ i ] || isNonWrappableLine( line ) ) {
 			flushParagraph();
 			// Don't add markup lines to the set
 		} else if ( isListItem( line ) ) {
