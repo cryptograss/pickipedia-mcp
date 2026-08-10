@@ -312,7 +312,13 @@ function isNonWrappableLine( line: string ): boolean {
  * Tags whose contents are verbatim wikitext and must never be rewritten.
  * ASCII art in <pre> is the case that keeps biting us.
  */
-const PROTECTED_TAGS = [ 'pre', 'nowiki', 'syntaxhighlight', 'source', 'poem', 'math' ];
+// 'proposed' is here for a different reason than the rest. The others hold
+// content the parser must not touch; this one holds a claim that has already
+// been marked. Rewriting inside it would wrap an existing marker in a second
+// marker, and treating its opening line as prose would wrap *that* — the tag
+// line is not a heading, category or template, so without this it reads as
+// ordinary text. See cryptograss/pickipedia#88.
+const PROTECTED_TAGS = [ 'pre', 'nowiki', 'syntaxhighlight', 'source', 'poem', 'math', 'proposed' ];
 
 /**
  * Open/close matchers per protected tag, compiled once from the constant list
@@ -489,16 +495,82 @@ function wrapListItemContent( line: string, existingLines?: Set<string> ): strin
 }
 
 /**
- * Wrap prose paragraphs and list items with Bot_proposes.
- * Only wraps content that is NOT in the existingLines set (i.e., new or changed content).
+ * A template call the bot added, marked so a human can check it.
+ *
+ * Prose gets {{Bot_proposes}}; this is the equivalent for structured claims.
+ * The <proposed> tag rather than a template because tag content is pulled out
+ * by the preprocessor before templates and parameters are parsed, so the pipes
+ * inside a template call need no escaping — see cryptograss/pickipedia#88.
+ * Escaping into the middle of a template call is what produced
+ * [[File:Instrument-icon-banjo[unverified].png]] in pickipedia#43.
+ *
+ * @param {string[]} blockLines The template call, as its own lines.
+ * @return {string[]} The call, marked.
+ */
+function markMarkupBlock( blockLines: string[] ): string[] {
+	const text = blockLines.join( '\n' );
+
+	// Templates that render their own proposed state do it better than a
+	// generic wrapper can — {{Show}} tints its infobox and sets an SMW
+	// property. Prefer that, and only fall back to the tag.
+	const template = TEMPLATES_WITH_STATUS.find( ( name ) => (
+		// eslint-disable-next-line security/detect-non-literal-regexp -- hardcoded list
+		new RegExp( `^\\s*\\{\\{\\s*${ name }\\s*[\\n|}]`, 'i' ).test( text )
+	) );
+	if ( template ) {
+		return injectTemplateStatus( text, template ).split( '\n' );
+	}
+
+	return [ '<proposed by="Magent">', ...blockLines, '</proposed>' ];
+}
+
+/**
+ * Whether a markup block is a claim that wants marking.
+ *
+ * Template calls are claims: an {{Ensemble}} is an assertion about who was in
+ * a band, a {{PodcastEpisode}} about who appeared on a show. Parser functions
+ * are not — {{#ask:}} is a query and {{#hsgimg:}} is display, and marking
+ * those would put an "unverified" badge on the furniture.
+ *
+ * Headings, categories and table rows are left alone deliberately. A category
+ * carries no visible content to attach a marker to, and a table row cannot be
+ * wrapped without breaking the table. Those stay gated by the wiki-side check
+ * (cryptograss/pickipedia#86), which is the honest outcome: express the claim
+ * as a template and it can be verified.
+ *
+ * @param {string[]} blockLines Lines of the block.
+ * @return {boolean} True if the block should be marked when new.
+ */
+function isMarkableMarkup( blockLines: string[] ): boolean {
+	const first = blockLines[ 0 ]?.trim() ?? '';
+	if ( !first.startsWith( '{{' ) || first.startsWith( '{{#' ) ) {
+		return false;
+	}
+	const text = blockLines.join( '\n' );
+	return !/\{\{Bot_proposes/i.test( text ) &&
+		!/<proposed[\s>]/i.test( text ) &&
+		!/\|\s*status\s*=\s*(proposed|unverified)/i.test( text ) &&
+		!isAlreadyVerified( text );
+}
+
+/**
+ * Wrap prose paragraphs and list items with Bot_proposes, and mark new
+ * template calls with <proposed>.
+ *
+ * Only touches content that is NOT in the existing sets (i.e. new or changed).
  *
  * @param {string} source Wikitext being saved.
- * @param {Set<string>} [existingLines] Content from the previous revision, as
- *   built by buildLineSet(). Omit it and every paragraph is treated as new,
- *   which is what pickipedia#43 looked like from the outside.
- * @return {string} Source with new prose wrapped.
+ * @param {Set<string>} [existingLines] Prose and list content from the
+ *   previous revision, as built by buildLineSet(). Omit it and every paragraph
+ *   is treated as new, which is what pickipedia#43 looked like from outside.
+ * @param {Set<string>} [existingBlocks] Markup blocks from the previous
+ *   revision, as built by buildBlockSet(). Omit it and every template call is
+ *   treated as new — correct for page creation, where it is.
+ * @return {string} Source with new content marked.
  */
-export function wrapProseWithBotProposes( source: string, existingLines?: Set<string> ): string {
+export function wrapProseWithBotProposes(
+	source: string, existingLines?: Set<string>, existingBlocks?: Set<string>
+): string {
 	const lines = source.split( '\n' );
 	const protectedLines = computeProtectedLines( lines );
 	const result: string[] = [];
@@ -528,9 +600,29 @@ export function wrapProseWithBotProposes( source: string, existingLines?: Set<st
 	for ( let i = 0; i < lines.length; i++ ) {
 		const line = lines[ i ];
 		if ( protectedLines[ i ] || isNonWrappableLine( line ) ) {
-			// Multi-line regions, headings, categories, templates, tables - don't wrap
+			// Multi-line regions, headings, categories, templates, tables.
+			// Never rewritten internally; a whole template call may be marked.
 			flushParagraph();
-			result.push( line );
+
+			// Take the whole block, so a multi-line template call is judged
+			// and marked as one thing rather than line by line.
+			const block: string[] = [ line ];
+			// Only consume while the *next* line is still inside the region.
+			// Testing the current line and breaking after the push swallows
+			// the first line past the block, which eats the paragraph after
+			// a template.
+			while ( protectedLines[ i ] && protectedLines[ i + 1 ] ) {
+				i++;
+				block.push( lines[ i ] );
+			}
+
+			const key = normalizeLine( block.join( ' ' ) );
+			const isNew = !existingBlocks || !existingBlocks.has( key );
+			if ( isNew && isMarkableMarkup( block ) ) {
+				result.push( ...markMarkupBlock( block ) );
+			} else {
+				result.push( ...block );
+			}
 		} else if ( isListItem( line ) ) {
 			// List items - wrap the content after the prefix
 			flushParagraph();
@@ -546,14 +638,59 @@ export function wrapProseWithBotProposes( source: string, existingLines?: Set<st
 }
 
 /**
+ * Index the markup blocks of a revision, so the wrapper can tell a template
+ * call that was already there from one this edit is adding.
+ *
+ * Segmented exactly as wrapProseWithBotProposes() segments — same protected
+ * regions, same block boundaries, same normalization. buildLineSet() carries
+ * the same warning and for the same reason: when the two halves of this
+ * comparison disagree, unchanged content gets re-marked, which is pickipedia#43.
+ *
+ * @param {string} source Wikitext to index.
+ * @return {Set<string>} Normalized markup blocks.
+ */
+export function buildBlockSet( source: string ): Set<string> {
+	const lines = source.split( '\n' );
+	const protectedLines = computeProtectedLines( lines );
+	const set = new Set<string>();
+
+	for ( let i = 0; i < lines.length; i++ ) {
+		const line = lines[ i ];
+		if ( !protectedLines[ i ] && !isNonWrappableLine( line ) ) {
+			continue;
+		}
+
+		const block: string[] = [ line ];
+		// Only consume while the *next* line is still inside the region.
+		// Testing the current line and breaking after the push swallows the
+		// first line past the block, which would eat the paragraph after a
+		// template.
+		while ( protectedLines[ i ] && protectedLines[ i + 1 ] ) {
+			i++;
+			block.push( lines[ i ] );
+		}
+
+		const key = normalizeLine( block.join( ' ' ) );
+		if ( key ) {
+			set.add( key );
+		}
+	}
+
+	return set;
+}
+
+/**
  * Apply verification to content.
  * If existingLines is provided, only new/changed content gets wrapped.
  *
  * @param {string} source Wikitext being saved.
- * @param {Set<string>} [existingLines] Content from the previous revision.
+ * @param {Set<string>} [existingLines] Prose from the previous revision.
+ * @param {Set<string>} [existingBlocks] Markup blocks from the previous revision.
  * @return {string} Source with status=proposed and/or Bot_proposes applied.
  */
-function applyVerification( source: string, existingLines?: Set<string> ): string {
+function applyVerification(
+	source: string, existingLines?: Set<string>, existingBlocks?: Set<string>
+): string {
 	const template = getTemplateWithStatus( source );
 
 	if ( template ) {
@@ -573,7 +710,9 @@ function applyVerification( source: string, existingLines?: Set<string> ): strin
 
 			// Wrap any prose after the template
 			if ( afterTemplate.trim() ) {
-				const wrappedAfter = wrapProseWithBotProposes( afterTemplate, existingLines );
+				const wrappedAfter = wrapProseWithBotProposes(
+					afterTemplate, existingLines, existingBlocks
+				);
 				modified = beforeTemplate + templateContent + wrappedAfter;
 			}
 		}
@@ -581,8 +720,8 @@ function applyVerification( source: string, existingLines?: Set<string> ): strin
 		return modified;
 	}
 
-	// No recognized template - wrap all prose with Bot_proposes
-	return wrapProseWithBotProposes( source, existingLines );
+	// No recognized template - mark new prose and new template calls
+	return wrapProseWithBotProposes( source, existingLines, existingBlocks );
 }
 
 /**
@@ -606,18 +745,20 @@ export const verificationMiddleware: Middleware = {
 
 		// For updates, fetch the previous revision to do diff-based verification
 		let existingLines: Set<string> | undefined;
+		let existingBlocks: Set<string> | undefined;
 		if ( context.tool === 'update-page' && context.latestId ) {
 			const previousSource = await fetchRevisionSource( context.latestId );
 			if ( previousSource ) {
 				existingLines = buildLineSet( previousSource );
-				console.error( `[verification] ${ context.title }: fetched ${ existingLines.size } lines from revision ${ context.latestId } for diff comparison` );
+				existingBlocks = buildBlockSet( previousSource );
+				console.error( `[verification] ${ context.title }: fetched ${ existingLines.size } lines and ${ existingBlocks.size } markup blocks from revision ${ context.latestId } for diff comparison` );
 			} else {
 				console.error( `[verification] ${ context.title }: could not fetch previous revision, will wrap all content` );
 			}
 		}
 
 		// Apply verification to non-exempt content
-		const modifiedSource = applyVerification( context.source, existingLines );
+		const modifiedSource = applyVerification( context.source, existingLines, existingBlocks );
 
 		// Log what we did
 		if ( modifiedSource !== context.source ) {

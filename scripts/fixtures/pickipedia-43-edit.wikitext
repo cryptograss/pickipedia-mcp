@@ -1,6 +1,8 @@
 '''Note''': Not to be confused with [[wikipedia:Stuart Duncan|Stuart Duncan]], who happens to be tall{{citation_needed}} and drinks a lot of water{{citation_needed}}.
 {{BandInfo|
-name=Water Tower }} [[File:Ahbck4.jpg|right|thumb|60px|Live photo from a sold out Water Tower show at Oakland Coliseum, a traditional bluegrass venue]]
+name=Water Tower
+}}
+[[File:Ahbck4.jpg|right|thumb|60px|Live photo from a sold out Water Tower show at Oakland Coliseum, a traditional bluegrass venue]]
 
 {{Ensemble
 |Kenny Feinstein
