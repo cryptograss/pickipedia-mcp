@@ -1,7 +1,8 @@
 import fetch, { Response } from 'node-fetch';
 import { USER_AGENT } from '../server.js';
 import { wikiService } from './wikiService.js';
-import { getMwn } from './mwn.js';
+import { getAuthenticatedSession, getMwn } from './mwn.js';
+import type { Mwn } from 'mwn';
 
 type RequestConfig = {
 	headers: Record<string, string>;
@@ -27,25 +28,38 @@ async function withAuth(
 		};
 	}
 
-	// Cookie-based authentication - add cookies and CSRF token
-	const cookies = await getCookiesFromJar();
+	// Cookie-based authentication - add cookies and CSRF token.
+	//
+	// Only a request with a body carries a CSRF token, and fetching that token
+	// costs a round trip, so read requests keep the cheaper path and skip it.
+	// That token request is also what reveals an expired session, which is why
+	// writes go through getAuthenticatedSession() and reads do not.
+	if ( body === undefined ) {
+		const cookies = getCookieString( await getMwn() );
+		return cookies === undefined ? { headers, body } : {
+			headers: { ...headers, Cookie: cookies },
+			body
+		};
+	}
+
+	// Order matters here. Recovering from an expired session replaces the
+	// client, and with it the cookie jar, so the cookies have to be read from
+	// whichever client comes back — not fetched beforehand. Reading them first
+	// would send the dead session's cookies alongside a freshly minted token,
+	// which fails in the same way as before but is much harder to see.
+	const { mwn, csrfToken } = await getAuthenticatedSession();
+	const cookies = getCookieString( mwn );
 	if ( cookies === undefined ) {
 		return { headers, body };
 	}
 
 	return {
 		headers: { ...headers, Cookie: cookies },
-		body: body ? { ...body, token: await getCsrfToken() } : body
+		body: { ...body, token: csrfToken }
 	};
 }
 
-async function getCsrfToken(): Promise<string> {
-	const mwn = await getMwn();
-	return await mwn.getCsrfToken();
-}
-
-async function getCookiesFromJar(): Promise<string | undefined> {
-	const mwn = await getMwn();
+function getCookieString( mwn: Mwn ): string | undefined {
 	const cookieJar = mwn.cookieJar;
 	if ( !cookieJar ) {
 		return undefined;
