@@ -267,5 +267,61 @@ check( 'a template does not swallow the paragraph after it',
 check( 'buildBlockSet and the wrapper agree on block boundaries',
 	buildBlockSet( episode ).size === 1, JSON.stringify( [ ...buildBlockSet( episode ) ] ) );
 
+// Inline content that holds a template call cannot go through the template
+// wrapper: escaping its pipes to {{!}} leaves the inner call unparsed, and the
+// reader is shown raw wikitext where a citation should be.
+console.log( '\nInline content holding a template call:' );
+
+const citedItem = '* Tunes down a half step.{{Src|video|cid=Bafy123|t=14:32}}';
+const citedItemOut = wrapProseWithBotProposes( citedItem, new Set(), new Set() );
+check( 'a list item with a citation is marked with the tag, not the template',
+	citedItemOut.includes( '<proposed by="Magent">' ) && !citedItemOut.includes( '{{Bot_proposes' ),
+	citedItemOut );
+check( 'the citation keeps its pipes',
+	citedItemOut.includes( '{{Src|video|cid=Bafy123|t=14:32}}' ) && !citedItemOut.includes( '{{!}}' ),
+	citedItemOut );
+check( 'the list prefix survives',
+	citedItemOut.startsWith( '* ' ), citedItemOut );
+
+const citedProse = 'He tunes down a half step.{{Src|video|cid=Bafy123|t=14:32}}';
+const citedProseOut = wrapProseWithBotProposes( citedProse, new Set(), new Set() );
+check( 'prose with a citation is marked with the tag too',
+	citedProseOut.includes( '<proposed by="Magent">' ) && !citedProseOut.includes( '{{!}}' ),
+	citedProseOut );
+
+// The old path is still the right one for everything else, and this fix should
+// not change the shape of ordinary bot prose.
+const untemplatedOut = wrapProseWithBotProposes( 'He plays a 1923 Loar.', new Set(), new Set() );
+check( 'plain prose still gets {{Bot_proposes}}',
+	untemplatedOut.includes( '{{Bot_proposes|He plays a 1923 Loar.|by=Magent}}' ), untemplatedOut );
+
+const pipedOut = wrapProseWithBotProposes( 'Tuned A|E|A|E on that cut.', new Set(), new Set() );
+check( 'a bare pipe in plain prose is still escaped',
+	pipedOut.includes( '{{!}}' ), pipedOut );
+
+// Every bot edit after the first re-runs the wrapper over a page that is
+// already marked. Marking a second time is pickipedia#43.
+console.log( '\nMarking is idempotent:' );
+
+function remark( source ) {
+	const once = wrapProseWithBotProposes( source, new Set(), new Set() );
+	return wrapProseWithBotProposes( once, buildLineSet( once ), buildBlockSet( once ) );
+}
+
+check( 'a tagged list item is not marked a second time',
+	( remark( citedItem ).match( /<proposed/g ) || [] ).length === 1,
+	remark( citedItem ) );
+check( 'tagged prose is not marked a second time',
+	( remark( citedProse ).match( /<proposed/g ) || [] ).length === 1,
+	remark( citedProse ) );
+check( 'plain prose is not marked a second time',
+	( remark( 'He plays a 1923 Loar.' ).match( /Bot_proposes/g ) || [] ).length === 1,
+	remark( 'He plays a 1923 Loar.' ) );
+
+const taggedItem = '* <proposed by="Magent">Tunes down.{{Src|video|cid=X}}</proposed>';
+check( 'a tagged line normalizes back to its bare content',
+	buildLineSet( taggedItem ).has( 'Tunes down.{{Src|video|cid=X}}' ),
+	JSON.stringify( [ ...buildLineSet( taggedItem ) ] ) );
+
 console.log( failures === 0 ? '\nAll checks passed.\n' : `\n${ failures } FAILED\n` );
 process.exit( failures === 0 ? 0 : 1 );

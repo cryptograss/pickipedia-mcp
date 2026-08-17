@@ -64,21 +64,74 @@ async function fetchRevisionSource( revisionId: number ): Promise<string | null>
 }
 
 /**
- * Strip Bot_proposes wrapper from a line to get the original content.
+ * Strip a proposal marker to get back the content underneath.
  * Used for comparing old vs new content.
  *
- * @param {string} text Possibly-wrapped text.
- * @return {string} Text with the wrapper and its pipe escapes removed.
+ * Both markers have to be handled here, not just the template. What the caller
+ * sends is always unmarked, while what the previous revision holds is marked in
+ * whichever form was chosen when it was written. If this only knew one of them,
+ * content wearing the other would never match its unmarked self, the wrapper
+ * would read it as new, and it would be marked a second time — which is
+ * pickipedia#43 all over again.
+ *
+ * @param {string} text Possibly-marked text.
+ * @return {string} Text with the marker and any pipe escapes removed.
  */
-function stripBotProposes( text: string ): string {
+function stripProposalMarkers( text: string ): string {
+	// The tag comes off first. Its payload may itself be a {{Bot_proposes}}
+	// left by an older revision, and peeling outside-in leaves that exposed to
+	// the template match below.
+	const tagged = text.match( /<proposed\b[^>]*>([\s\S]*?)<\/proposed>/i );
+	if ( tagged ) {
+		text = tagged[ 1 ].trim();
+	}
+
 	// Match {{Bot_proposes|content|by=...}} and extract the content
 	// Handle escaped pipes ({{!}})
-	const match = text.match( /\{\{Bot_proposes\|(.+?)\|by=[^}]+\}\}/i );
-	if ( match ) {
+	const templated = text.match( /\{\{Bot_proposes\|(.+?)\|by=[^}]+\}\}/i );
+	if ( templated ) {
 		// Unescape pipes
-		return match[ 1 ].replace( /\{\{!\}\}/g, '|' );
+		return templated[ 1 ].replace( /\{\{!\}\}/g, '|' );
 	}
 	return text;
+}
+
+/**
+ * Whether content already carries a proposal marker of either kind.
+ *
+ * @param {string} content Inline content, list prefix already removed.
+ * @return {boolean} True if it is marked and should be left alone.
+ */
+function isAlreadyProposed( content: string ): boolean {
+	return content.startsWith( '{{Bot_proposes' ) || /<proposed[\s>]/i.test( content );
+}
+
+/**
+ * Mark inline content as bot-proposed, picking the marker its payload can survive.
+ *
+ * {{Bot_proposes}} carries its payload as a template parameter, so every pipe
+ * inside has to be escaped to {{!}}. That is fine for prose and fatal for
+ * anything holding a template call: {{!}} only becomes a pipe after the
+ * preprocessor has already decided where each template's arguments begin and
+ * end, so the escaped pipes never separate anything. The inner call is never
+ * made and the reader is shown raw wikitext — a {{Src}} citation renders as
+ * literally "{{Src|video|cid=...}}" in the middle of a sentence.
+ *
+ * The <proposed> tag carries its payload as tag content, which the preprocessor
+ * lifts out before it parses templates at all. Nothing needs escaping and
+ * nested calls survive. Same reasoning as markMarkupBlock(), which has used the
+ * tag for block-level template calls since cryptograss/pickipedia#88; this is
+ * that lesson applied to the inline case.
+ *
+ * @param {string} content Inline content to mark.
+ * @return {string} The content, marked.
+ */
+function markInlineContent( content: string ): string {
+	if ( content.includes( '{{' ) ) {
+		return `<proposed by="Magent">${ content }</proposed>`;
+	}
+	const escaped = content.replace( /\|/g, '{{!}}' );
+	return `{{Bot_proposes|${ escaped }|by=Magent}}`;
 }
 
 /**
@@ -89,7 +142,7 @@ function stripBotProposes( text: string ): string {
  * @return {string} Comparable form of the line.
  */
 function normalizeLine( line: string ): string {
-	return stripBotProposes( line.trim() ).trim();
+	return stripProposalMarkers( line.trim() ).trim();
 }
 
 /**
@@ -473,8 +526,8 @@ function wrapListItemContent( line: string, existingLines?: Set<string> ): strin
 	const prefix = match[ 1 ];
 	const content = match[ 2 ];
 
-	// Don't wrap if empty, already wrapped, or already verified
-	if ( !content || content.startsWith( '{{Bot_proposes' ) || isAlreadyVerified( content ) ) {
+	// Don't wrap if empty, already marked, or already verified
+	if ( !content || isAlreadyProposed( content ) || isAlreadyVerified( content ) ) {
 		return line;
 	}
 
@@ -489,9 +542,7 @@ function wrapListItemContent( line: string, existingLines?: Set<string> ): strin
 		return line;
 	}
 
-	// Escape pipes and wrap the content
-	const escaped = content.replace( /\|/g, '{{!}}' );
-	return `${ prefix } {{Bot_proposes|${ escaped }|by=Magent}}`;
+	return `${ prefix } ${ markInlineContent( content ) }`;
 }
 
 /**
@@ -579,16 +630,15 @@ export function wrapProseWithBotProposes(
 	const flushParagraph = (): void => {
 		if ( currentParagraph.length > 0 ) {
 			const text = currentParagraph.join( ' ' ).trim();
-			if ( text && !text.startsWith( '{{Bot_proposes' ) && !isAlreadyVerified( text ) ) {
+			if ( text && !isAlreadyProposed( text ) && !isAlreadyVerified( text ) ) {
 				// Check if this paragraph existed in the previous revision
 				const normalizedText = normalizeLine( text );
 				if ( existingLines && existingLines.has( normalizedText ) ) {
 					// Content existed before - don't wrap it
 					result.push( text );
 				} else {
-					// New content - wrap it
-					const escaped = text.replace( /\|/g, '{{!}}' );
-					result.push( `{{Bot_proposes|${ escaped }|by=Magent}}` );
+					// New content - mark it
+					result.push( markInlineContent( text ) );
 				}
 			} else if ( text ) {
 				result.push( text );
