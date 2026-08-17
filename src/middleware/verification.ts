@@ -583,6 +583,11 @@ function markMarkupBlock( blockLines: string[] ): string[] {
  * are not — {{#ask:}} is a query and {{#hsgimg:}} is display, and marking
  * those would put an "unverified" badge on the furniture.
  *
+ * Verbatim blocks are claims too. Whatever a bot puts inside <pre> or <nowiki>
+ * is content it added and content somebody should be able to check — a block of
+ * guest-name patterns, a tracklist, a quoted setlist. The tag stops the parser
+ * touching what is inside it; it says nothing about whether the thing is true.
+ *
  * Headings, categories and table rows are left alone deliberately. A category
  * carries no visible content to attach a marker to, and a table row cannot be
  * wrapped without breaking the table. Those stay gated by the wiki-side check
@@ -594,9 +599,28 @@ function markMarkupBlock( blockLines: string[] ): string[] {
  */
 function isMarkableMarkup( blockLines: string[] ): boolean {
 	const first = blockLines[ 0 ]?.trim() ?? '';
-	if ( !first.startsWith( '{{' ) || first.startsWith( '{{#' ) ) {
+
+	const isTemplateCall = first.startsWith( '{{' ) && !first.startsWith( '{{#' );
+
+	// A verbatim block — <pre>, <nowiki>, <poem> — is content a bot added and
+	// content a human should be able to check, so it wants marking like
+	// anything else. It was falling through unmarked, and since the wiki-side
+	// gate now asks for a marker on every new line (pickipedia#91), the effect
+	// was that a bot could not add a <pre> block to any page at all: the
+	// middleware declined to mark it and the gate then refused the edit.
+	//
+	// 'proposed' is excluded because it is already a marker. Wrapping it would
+	// nest one inside another.
+	const isVerbatimBlock = PROTECTED_TAGS.some( ( tag ) => (
+		tag !== 'proposed' &&
+		// eslint-disable-next-line security/detect-non-literal-regexp -- hardcoded list
+		new RegExp( `^<${ tag }[\\s>]`, 'i' ).test( first )
+	) );
+
+	if ( !isTemplateCall && !isVerbatimBlock ) {
 		return false;
 	}
+
 	const text = blockLines.join( '\n' );
 	return !/\{\{Bot_proposes/i.test( text ) &&
 		!/<proposed[\s>]/i.test( text ) &&
