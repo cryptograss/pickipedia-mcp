@@ -301,6 +301,39 @@ check( 'a bare pipe in plain prose is still escaped',
 
 // Every bot edit after the first re-runs the wrapper over a page that is
 // already marked. Marking a second time is pickipedia#43.
+// A verbatim block holds content the bot added, so it wants a marker like
+// anything else. It was falling through unmarked — and since the wiki-side gate
+// now asks for a marker on every new line, that meant a bot could not add a
+// <pre> block to any page at all.
+console.log( '\nVerbatim blocks:' );
+
+const preBlock = '<pre class="guest-patterns">\n^S\\d+E\\d+ - (?P<guest>.+)$\n</pre>';
+const preOut = wrapProseWithBotProposes( preBlock, new Set(), new Set() );
+check( 'a new <pre> block is marked',
+	preOut.includes( '<proposed by="Magent">' ), preOut );
+check( 'its contents are left exactly alone',
+	preOut.includes( '^S\\d+E\\d+ - (?P<guest>.+)$' ), preOut );
+check( 'the class attribute survives, since config is found by it',
+	preOut.includes( 'class="guest-patterns"' ), preOut );
+
+check( 'a <nowiki> block is marked too',
+	wrapProseWithBotProposes( '<nowiki>\n{{not a call}}\n</nowiki>', new Set(), new Set() )
+		.includes( '<proposed' ) );
+
+check( 'an already-marked block is not marked again',
+	( wrapProseWithBotProposes(
+		'<proposed by="Magent">\n<pre>\nx\n</pre>\n</proposed>', new Set(), new Set()
+	).match( /<proposed/g ) || [] ).length === 1 );
+
+check( 'a <pre> already on the page is not marked on a later edit',
+	( () => {
+		const once = wrapProseWithBotProposes( preBlock, new Set(), new Set() );
+		const twice = wrapProseWithBotProposes(
+			once, buildLineSet( once ), buildBlockSet( once )
+		);
+		return ( twice.match( /<proposed/g ) || [] ).length === 1;
+	} )() );
+
 console.log( '\nMarking is idempotent:' );
 
 function remark( source ) {
