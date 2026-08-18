@@ -665,13 +665,13 @@ function isMarkableMarkup( blockLines: string[] ): boolean {
  * @param {Map<string,string>} [existingLines] Prose and list content from the
  *   previous revision, as built by buildLineSet(). Omit it and every paragraph
  *   is treated as new, which is what pickipedia#43 looked like from outside.
- * @param {Set<string>} [existingBlocks] Markup blocks from the previous
+ * @param {Map<string,string[]>} [existingBlocks] Markup blocks from the previous
  *   revision, as built by buildBlockSet(). Omit it and every template call is
  *   treated as new — correct for page creation, where it is.
  * @return {string} Source with new content marked.
  */
 export function wrapProseWithBotProposes(
-	source: string, existingLines?: Map<string, string>, existingBlocks?: Set<string>
+	source: string, existingLines?: Map<string, string>, existingBlocks?: Map<string, string[]>
 ): string {
 	const lines = source.split( '\n' );
 	const protectedLines = computeProtectedLines( lines );
@@ -726,11 +726,18 @@ export function wrapProseWithBotProposes(
 			}
 
 			const key = normalizeLine( block.join( ' ' ) );
-			const isNew = !existingBlocks || !existingBlocks.has( key );
-			if ( isNew && isMarkableMarkup( block ) ) {
+			const asStored = existingBlocks?.get( key );
+			if ( asStored === undefined && isMarkableMarkup( block ) ) {
 				result.push( ...markMarkupBlock( block ) );
 			} else {
-				result.push( ...block );
+				// A block already on the page goes back as the page had it.
+				// Pushing the incoming block instead drops its <proposed>
+				// wrapper, so bot content that nobody has reviewed quietly
+				// stops looking unreviewed — the marker disappears and no
+				// review happened. That fails open, which is the wrong
+				// direction for a thing whose whole job is to hold content
+				// until a human looks at it.
+				result.push( ...( asStored ?? block ) );
 			}
 		} else if ( isListItem( line ) ) {
 			// List items - wrap the content after the prefix
@@ -756,12 +763,13 @@ export function wrapProseWithBotProposes(
  * comparison disagree, unchanged content gets re-marked, which is pickipedia#43.
  *
  * @param {string} source Wikitext to index.
- * @return {Set<string>} Normalized markup blocks.
+ * @return {Map<string,string[]>} Normalized block text to the lines the page holds,
+ *   so a match can be restored with whatever marker it carried.
  */
-export function buildBlockSet( source: string ): Set<string> {
+export function buildBlockSet( source: string ): Map<string, string[]> {
 	const lines = source.split( '\n' );
 	const protectedLines = computeProtectedLines( lines );
-	const set = new Set<string>();
+	const found = new Map<string, string[]>();
 
 	for ( let i = 0; i < lines.length; i++ ) {
 		const line = lines[ i ];
@@ -780,12 +788,15 @@ export function buildBlockSet( source: string ): Set<string> {
 		}
 
 		const key = normalizeLine( block.join( ' ' ) );
-		if ( key ) {
-			set.add( key );
+		// The block is kept, not just its key, so a later edit can put back
+		// what the page had rather than what a bot sent. First occurrence wins,
+		// for the same reason it does for prose.
+		if ( key && !found.has( key ) ) {
+			found.set( key, block );
 		}
 	}
 
-	return set;
+	return found;
 }
 
 /**
@@ -794,11 +805,11 @@ export function buildBlockSet( source: string ): Set<string> {
  *
  * @param {string} source Wikitext being saved.
  * @param {Map<string,string>} [existingLines] Prose from the previous revision.
- * @param {Set<string>} [existingBlocks] Markup blocks from the previous revision.
+ * @param {Map<string,string[]>} [existingBlocks] Markup blocks from the previous revision.
  * @return {string} Source with status=proposed and/or Bot_proposes applied.
  */
 function applyVerification(
-	source: string, existingLines?: Map<string, string>, existingBlocks?: Set<string>
+	source: string, existingLines?: Map<string, string>, existingBlocks?: Map<string, string[]>
 ): string {
 	const template = getTemplateWithStatus( source );
 
@@ -854,7 +865,7 @@ export const verificationMiddleware: Middleware = {
 
 		// For updates, fetch the previous revision to do diff-based verification
 		let existingLines: Map<string, string> | undefined;
-		let existingBlocks: Set<string> | undefined;
+		let existingBlocks: Map<string, string[]> | undefined;
 		if ( context.tool === 'update-page' && context.latestId ) {
 			const previousSource = await fetchRevisionSource( context.latestId );
 			if ( previousSource ) {
