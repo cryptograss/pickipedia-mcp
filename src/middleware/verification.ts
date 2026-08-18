@@ -91,9 +91,19 @@ function stripProposalMarkers( text: string ): string {
 	const templated = text.match( /\{\{Bot_proposes\|(.+?)\|by=[^}]+\}\}/i );
 	if ( templated ) {
 		// Unescape pipes
-		return templated[ 1 ].replace( /\{\{!\}\}/g, '|' );
+		text = templated[ 1 ].replace( /\{\{!\}\}/g, '|' );
 	}
-	return text;
+
+	// {{verified}} and {{source}} sit *after* the sentence rather than around
+	// it — they render a superscript tick or citation — so unlike the proposal
+	// markers they are a suffix, not a wrapper.
+	//
+	// They have to come off for comparison all the same. A bot regenerating a
+	// page sends the bare sentence; the page holds that sentence plus whatever
+	// a human appended to it. Compared as-is the two never match, the sentence
+	// reads as new, and the verification a person did by hand is replaced with
+	// an unverified badge from a bot. Same claim, so: same key.
+	return text.replace( /\{\{(?:verified|source)\s*\|[^}]*\}\}/gi, '' ).trim();
 }
 
 /**
@@ -157,20 +167,23 @@ function normalizeLine( line: string ): string {
  * unverified — the complaint in pickipedia#43.
  *
  * @param {string} source Wikitext to index.
- * @return {Set<string>} Normalized paragraph and list-item text.
+ * @return {Map<string,string>} Normalized text to the form the page holds it in,
+ *   so a match can be restored with whatever marker it carried.
  */
-export function buildLineSet( source: string ): Set<string> {
+export function buildLineSet( source: string ): Map<string, string> {
 	const lines = source.split( '\n' );
 	const protectedLines = computeProtectedLines( lines );
-	const set = new Set<string>();
+	const found = new Map<string, string>();
 	let currentParagraph: string[] = [];
 
 	const flushParagraph = (): void => {
 		if ( currentParagraph.length > 0 ) {
 			const text = currentParagraph.join( ' ' ).trim();
 			const normalized = normalizeLine( text );
-			if ( normalized ) {
-				set.add( normalized );
+			// First occurrence wins. A page holding the same sentence twice,
+			// once verified and once not, should keep the verified one.
+			if ( normalized && !found.has( normalized ) ) {
+				found.set( normalized, text );
 			}
 			currentParagraph = [];
 		}
@@ -187,8 +200,8 @@ export function buildLineSet( source: string ): Set<string> {
 			const match = line.trim().match( /^[*#:;]+\s*(.*)$/ );
 			if ( match && match[ 1 ] ) {
 				const normalized = normalizeLine( match[ 1 ] );
-				if ( normalized ) {
-					set.add( normalized );
+				if ( normalized && !found.has( normalized ) ) {
+					found.set( normalized, match[ 1 ] );
 				}
 			}
 		} else {
@@ -197,7 +210,7 @@ export function buildLineSet( source: string ): Set<string> {
 	}
 
 	flushParagraph();
-	return set;
+	return found;
 }
 
 /**
@@ -348,6 +361,17 @@ function findTemplateEnd( source: string, startIndex: number ): number {
  */
 function isNonWrappableLine( line: string ): boolean {
 	const trimmed = line.trim();
+
+	// A marked paragraph is still a paragraph. {{Bot_proposes|…}} opens with
+	// {{, which would otherwise file it as markup — so the same sentence lands
+	// in a different bucket depending on whether anybody has marked it, and a
+	// lookup of the unmarked form never finds the marked one. That mismatch is
+	// what let a rewrite silently un-verify content, and it is the same shape
+	// as pickipedia#94 and pickipedia-mcp#21.
+	if ( /^\{\{(Bot_proposes|verified|source)\s*\|/i.test( trimmed ) ) {
+		return false;
+	}
+
 	return (
 		trimmed === '' ||
 		trimmed.startsWith( '==' ) || // Headings
@@ -510,11 +534,11 @@ function isListItem( line: string ): boolean {
  * Only wraps if the content is not in the existingLines set.
  *
  * @param {string} line List-item line.
- * @param {Set<string>} [existingLines] Content from the previous revision;
+ * @param {Map<string,string>} [existingLines] Content from the previous revision;
  *   anything found here is left alone.
  * @return {string} The line, wrapped if its content is new.
  */
-function wrapListItemContent( line: string, existingLines?: Set<string> ): string {
+function wrapListItemContent( line: string, existingLines?: Map<string, string> ): string {
 	const trimmed = line.trim();
 
 	// Find the list prefix (may be multiple chars like ** or **)
@@ -537,9 +561,12 @@ function wrapListItemContent( line: string, existingLines?: Set<string> ): strin
 		return line;
 	}
 
-	// Don't wrap if this content existed in the previous revision
-	if ( existingLines && existingLines.has( normalizeLine( content ) ) ) {
-		return line;
+	// Content already on the page goes back as the page had it, markers and
+	// all. Emitting what the caller sent would strip whatever state a human
+	// left the line in — see flushParagraph() for the same reasoning.
+	const asStored = existingLines?.get( normalizeLine( content ) );
+	if ( asStored !== undefined ) {
+		return `${ prefix } ${ asStored }`;
 	}
 
 	return `${ prefix } ${ markInlineContent( content ) }`;
@@ -635,16 +662,16 @@ function isMarkableMarkup( blockLines: string[] ): boolean {
  * Only touches content that is NOT in the existing sets (i.e. new or changed).
  *
  * @param {string} source Wikitext being saved.
- * @param {Set<string>} [existingLines] Prose and list content from the
+ * @param {Map<string,string>} [existingLines] Prose and list content from the
  *   previous revision, as built by buildLineSet(). Omit it and every paragraph
  *   is treated as new, which is what pickipedia#43 looked like from outside.
- * @param {Set<string>} [existingBlocks] Markup blocks from the previous
+ * @param {Map<string,string[]>} [existingBlocks] Markup blocks from the previous
  *   revision, as built by buildBlockSet(). Omit it and every template call is
  *   treated as new — correct for page creation, where it is.
  * @return {string} Source with new content marked.
  */
 export function wrapProseWithBotProposes(
-	source: string, existingLines?: Set<string>, existingBlocks?: Set<string>
+	source: string, existingLines?: Map<string, string>, existingBlocks?: Map<string, string[]>
 ): string {
 	const lines = source.split( '\n' );
 	const protectedLines = computeProtectedLines( lines );
@@ -655,11 +682,19 @@ export function wrapProseWithBotProposes(
 		if ( currentParagraph.length > 0 ) {
 			const text = currentParagraph.join( ' ' ).trim();
 			if ( text && !isAlreadyProposed( text ) && !isAlreadyVerified( text ) ) {
-				// Check if this paragraph existed in the previous revision
+				// Content that was already on the page goes back exactly as the
+				// page had it, markers and all — not as the caller sent it.
+				//
+				// A bot regenerating a page sends plain prose. If that is
+				// emitted verbatim, every marker the sentence carried is gone:
+				// a pending proposal quietly loses its badge, and worse, a
+				// claim somebody verified reverts to unverified with no error
+				// anywhere. Putting the stored form back keeps whatever state a
+				// human left it in.
 				const normalizedText = normalizeLine( text );
-				if ( existingLines && existingLines.has( normalizedText ) ) {
-					// Content existed before - don't wrap it
-					result.push( text );
+				const asStored = existingLines?.get( normalizedText );
+				if ( asStored !== undefined ) {
+					result.push( asStored );
 				} else {
 					// New content - mark it
 					result.push( markInlineContent( text ) );
@@ -691,11 +726,18 @@ export function wrapProseWithBotProposes(
 			}
 
 			const key = normalizeLine( block.join( ' ' ) );
-			const isNew = !existingBlocks || !existingBlocks.has( key );
-			if ( isNew && isMarkableMarkup( block ) ) {
+			const asStored = existingBlocks?.get( key );
+			if ( asStored === undefined && isMarkableMarkup( block ) ) {
 				result.push( ...markMarkupBlock( block ) );
 			} else {
-				result.push( ...block );
+				// A block already on the page goes back as the page had it.
+				// Pushing the incoming block instead drops its <proposed>
+				// wrapper, so bot content that nobody has reviewed quietly
+				// stops looking unreviewed — the marker disappears and no
+				// review happened. That fails open, which is the wrong
+				// direction for a thing whose whole job is to hold content
+				// until a human looks at it.
+				result.push( ...( asStored ?? block ) );
 			}
 		} else if ( isListItem( line ) ) {
 			// List items - wrap the content after the prefix
@@ -721,12 +763,13 @@ export function wrapProseWithBotProposes(
  * comparison disagree, unchanged content gets re-marked, which is pickipedia#43.
  *
  * @param {string} source Wikitext to index.
- * @return {Set<string>} Normalized markup blocks.
+ * @return {Map<string,string[]>} Normalized block text to the lines the page holds,
+ *   so a match can be restored with whatever marker it carried.
  */
-export function buildBlockSet( source: string ): Set<string> {
+export function buildBlockSet( source: string ): Map<string, string[]> {
 	const lines = source.split( '\n' );
 	const protectedLines = computeProtectedLines( lines );
-	const set = new Set<string>();
+	const found = new Map<string, string[]>();
 
 	for ( let i = 0; i < lines.length; i++ ) {
 		const line = lines[ i ];
@@ -745,12 +788,15 @@ export function buildBlockSet( source: string ): Set<string> {
 		}
 
 		const key = normalizeLine( block.join( ' ' ) );
-		if ( key ) {
-			set.add( key );
+		// The block is kept, not just its key, so a later edit can put back
+		// what the page had rather than what a bot sent. First occurrence wins,
+		// for the same reason it does for prose.
+		if ( key && !found.has( key ) ) {
+			found.set( key, block );
 		}
 	}
 
-	return set;
+	return found;
 }
 
 /**
@@ -758,12 +804,12 @@ export function buildBlockSet( source: string ): Set<string> {
  * If existingLines is provided, only new/changed content gets wrapped.
  *
  * @param {string} source Wikitext being saved.
- * @param {Set<string>} [existingLines] Prose from the previous revision.
- * @param {Set<string>} [existingBlocks] Markup blocks from the previous revision.
+ * @param {Map<string,string>} [existingLines] Prose from the previous revision.
+ * @param {Map<string,string[]>} [existingBlocks] Markup blocks from the previous revision.
  * @return {string} Source with status=proposed and/or Bot_proposes applied.
  */
 function applyVerification(
-	source: string, existingLines?: Set<string>, existingBlocks?: Set<string>
+	source: string, existingLines?: Map<string, string>, existingBlocks?: Map<string, string[]>
 ): string {
 	const template = getTemplateWithStatus( source );
 
@@ -818,8 +864,8 @@ export const verificationMiddleware: Middleware = {
 		}
 
 		// For updates, fetch the previous revision to do diff-based verification
-		let existingLines: Set<string> | undefined;
-		let existingBlocks: Set<string> | undefined;
+		let existingLines: Map<string, string> | undefined;
+		let existingBlocks: Map<string, string[]> | undefined;
 		if ( context.tool === 'update-page' && context.latestId ) {
 			const previousSource = await fetchRevisionSource( context.latestId );
 			if ( previousSource ) {

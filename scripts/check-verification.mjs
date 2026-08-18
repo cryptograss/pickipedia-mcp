@@ -245,25 +245,25 @@ check( 'a parser function is furniture, not a claim',
 	!wrapProseWithBotProposes( q, buildLineSet( 'Intro.' ), buildBlockSet( 'Intro.' ) )
 		.includes( '<proposed' ) );
 check( 'a heading is not marked',
-	!wrapProseWithBotProposes( '== Shows ==', undefined, new Set() ).includes( '<proposed' ) );
+	!wrapProseWithBotProposes( '== Shows ==', undefined, new Map() ).includes( '<proposed' ) );
 check( 'a bare category is not marked',
-	!wrapProseWithBotProposes( '[[Category:Shows]]', undefined, new Set() ).includes( '<proposed' ) );
+	!wrapProseWithBotProposes( '[[Category:Shows]]', undefined, new Map() ).includes( '<proposed' ) );
 check( 'an already-marked call is not double-marked',
 	!wrapProseWithBotProposes(
-		'<proposed by="Magent">\n{{Ensemble|Kenny}}\n</proposed>', undefined, new Set()
+		'<proposed by="Magent">\n{{Ensemble|Kenny}}\n</proposed>', undefined, new Map()
 	).includes( '<proposed by="Magent">\n<proposed' ) );
 check( 'a template that supports status gets status=proposed, not the tag',
 	( () => {
-		const out = wrapProseWithBotProposes( '{{Show\n|artists=Billy Strings\n}}', undefined, new Set() );
+		const out = wrapProseWithBotProposes( '{{Show\n|artists=Billy Strings\n}}', undefined, new Map() );
 		return out.includes( 'status=proposed' ) && !out.includes( '<proposed' );
 	} )() );
 
 console.log( '\nBlock segmentation:' );
 check( 'a template does not swallow the paragraph after it',
 	wrapProseWithBotProposes(
-		'{{Infobox\n| a = 1\n}}\nProse right after.', undefined, new Set()
+		'{{Infobox\n| a = 1\n}}\nProse right after.', undefined, new Map()
 	).includes( '{{Bot_proposes|Prose right after.' ),
-	wrapProseWithBotProposes( '{{Infobox\n| a = 1\n}}\nProse right after.', undefined, new Set() ) );
+	wrapProseWithBotProposes( '{{Infobox\n| a = 1\n}}\nProse right after.', undefined, new Map() ) );
 check( 'buildBlockSet and the wrapper agree on block boundaries',
 	buildBlockSet( episode ).size === 1, JSON.stringify( [ ...buildBlockSet( episode ) ] ) );
 
@@ -273,7 +273,7 @@ check( 'buildBlockSet and the wrapper agree on block boundaries',
 console.log( '\nInline content holding a template call:' );
 
 const citedItem = '* Tunes down a half step.{{Src|video|cid=Bafy123|t=14:32}}';
-const citedItemOut = wrapProseWithBotProposes( citedItem, new Set(), new Set() );
+const citedItemOut = wrapProseWithBotProposes( citedItem, new Map(), new Map() );
 check( 'a list item with a citation is marked with the tag, not the template',
 	citedItemOut.includes( '<proposed by="Magent">' ) && !citedItemOut.includes( '{{Bot_proposes' ),
 	citedItemOut );
@@ -284,18 +284,18 @@ check( 'the list prefix survives',
 	citedItemOut.startsWith( '* ' ), citedItemOut );
 
 const citedProse = 'He tunes down a half step.{{Src|video|cid=Bafy123|t=14:32}}';
-const citedProseOut = wrapProseWithBotProposes( citedProse, new Set(), new Set() );
+const citedProseOut = wrapProseWithBotProposes( citedProse, new Map(), new Map() );
 check( 'prose with a citation is marked with the tag too',
 	citedProseOut.includes( '<proposed by="Magent">' ) && !citedProseOut.includes( '{{!}}' ),
 	citedProseOut );
 
 // The old path is still the right one for everything else, and this fix should
 // not change the shape of ordinary bot prose.
-const untemplatedOut = wrapProseWithBotProposes( 'He plays a 1923 Loar.', new Set(), new Set() );
+const untemplatedOut = wrapProseWithBotProposes( 'He plays a 1923 Loar.', new Map(), new Map() );
 check( 'plain prose still gets {{Bot_proposes}}',
 	untemplatedOut.includes( '{{Bot_proposes|He plays a 1923 Loar.|by=Magent}}' ), untemplatedOut );
 
-const pipedOut = wrapProseWithBotProposes( 'Tuned A|E|A|E on that cut.', new Set(), new Set() );
+const pipedOut = wrapProseWithBotProposes( 'Tuned A|E|A|E on that cut.', new Map(), new Map() );
 check( 'a bare pipe in plain prose is still escaped',
 	pipedOut.includes( '{{!}}' ), pipedOut );
 
@@ -308,7 +308,7 @@ check( 'a bare pipe in plain prose is still escaped',
 console.log( '\nVerbatim blocks:' );
 
 const preBlock = '<pre class="guest-patterns">\n^S\\d+E\\d+ - (?P<guest>.+)$\n</pre>';
-const preOut = wrapProseWithBotProposes( preBlock, new Set(), new Set() );
+const preOut = wrapProseWithBotProposes( preBlock, new Map(), new Map() );
 check( 'a new <pre> block is marked',
 	preOut.includes( '<proposed by="Magent">' ), preOut );
 check( 'its contents are left exactly alone',
@@ -317,17 +317,17 @@ check( 'the class attribute survives, since config is found by it',
 	preOut.includes( 'class="guest-patterns"' ), preOut );
 
 check( 'a <nowiki> block is marked too',
-	wrapProseWithBotProposes( '<nowiki>\n{{not a call}}\n</nowiki>', new Set(), new Set() )
+	wrapProseWithBotProposes( '<nowiki>\n{{not a call}}\n</nowiki>', new Map(), new Map() )
 		.includes( '<proposed' ) );
 
 check( 'an already-marked block is not marked again',
 	( wrapProseWithBotProposes(
-		'<proposed by="Magent">\n<pre>\nx\n</pre>\n</proposed>', new Set(), new Set()
+		'<proposed by="Magent">\n<pre>\nx\n</pre>\n</proposed>', new Map(), new Map()
 	).match( /<proposed/g ) || [] ).length === 1 );
 
 check( 'a <pre> already on the page is not marked on a later edit',
 	( () => {
-		const once = wrapProseWithBotProposes( preBlock, new Set(), new Set() );
+		const once = wrapProseWithBotProposes( preBlock, new Map(), new Map() );
 		const twice = wrapProseWithBotProposes(
 			once, buildLineSet( once ), buildBlockSet( once )
 		);
@@ -337,7 +337,7 @@ check( 'a <pre> already on the page is not marked on a later edit',
 console.log( '\nMarking is idempotent:' );
 
 function remark( source ) {
-	const once = wrapProseWithBotProposes( source, new Set(), new Set() );
+	const once = wrapProseWithBotProposes( source, new Map(), new Map() );
 	return wrapProseWithBotProposes( once, buildLineSet( once ), buildBlockSet( once ) );
 }
 
@@ -355,6 +355,82 @@ const taggedItem = '* <proposed by="Magent">Tunes down.{{Src|video|cid=X}}</prop
 check( 'a tagged line normalizes back to its bare content',
 	buildLineSet( taggedItem ).has( 'Tunes down.{{Src|video|cid=X}}' ),
 	JSON.stringify( [ ...buildLineSet( taggedItem ) ] ) );
+
+// A bot regenerating a page sends plain prose. Whatever markers a human left on
+// that prose have to come back — otherwise a rewrite silently strips a pending
+// proposal, or worse, replaces somebody's verification with an unverified badge
+// from a bot. No error is raised in either case; the badge simply changes.
+console.log( '\nRewriting a page keeps what humans left on it:' );
+
+function rewrite( oldSrc, newSrc ) {
+	return wrapProseWithBotProposes(
+		newSrc, buildLineSet( oldSrc ), buildBlockSet( oldSrc )
+	);
+}
+
+const proposed = '{{Bot_proposes|Bill Monroe played a Gibson F-5.|by=Magent}}';
+check( 'a pending proposal survives a clean rewrite',
+	rewrite( proposed, 'Bill Monroe played a Gibson F-5.' ) === proposed,
+	rewrite( proposed, 'Bill Monroe played a Gibson F-5.' ) );
+
+// {{verified}} and {{source}} follow the sentence rather than wrapping it, so
+// they differ from the bot's plain prose by a suffix. Compared as-is they never
+// match, which is exactly how a verification gets thrown away.
+const verified = 'Bill Monroe played a Gibson F-5.{{verified|I was there}}';
+check( 'a human verification survives a clean rewrite',
+	rewrite( verified, 'Bill Monroe played a Gibson F-5.' ) === verified,
+	rewrite( verified, 'Bill Monroe played a Gibson F-5.' ) );
+
+const cited = 'Born in 1911.{{source|https://example.com/bio}}';
+check( 'a {{source}} citation survives too',
+	rewrite( cited, 'Born in 1911.' ) === cited,
+	rewrite( cited, 'Born in 1911.' ) );
+
+const verifiedItem = '* Played the Ryman in 1998.{{verified|per setlist.fm}}';
+check( 'a verified list item survives',
+	rewrite( verifiedItem, '* Played the Ryman in 1998.' ) === verifiedItem,
+	rewrite( verifiedItem, '* Played the Ryman in 1998.' ) );
+
+check( 'a genuinely new claim beside verified content is still marked',
+	( () => {
+		const out = rewrite( verified, 'Bill Monroe played a Gibson F-5.\n\nHe tuned it high.' );
+		return out.includes( '{{verified|I was there}}' ) &&
+			out.includes( '{{Bot_proposes|He tuned it high.' );
+	} )() );
+
+check( 'changed prose is marked rather than restored',
+	rewrite( verified, 'Bill Monroe played a Martin.' )
+		.includes( '{{Bot_proposes|Bill Monroe played a Martin.' ) );
+
+// The block half of the same problem, and the one that fails in the dangerous
+// direction. A <proposed> wrapper that disappears means bot content nobody has
+// reviewed stops looking unreviewed — it fails open, where losing a
+// verification merely fails closed and somebody re-ticks it.
+//
+// This is the case the podcast firehose will hit: episode pages get
+// regenerated from feed data on a timer, so every run is a clean rewrite.
+console.log( '\nRewriting a page keeps its <proposed> blocks:' );
+
+const proposedBlock = '<proposed by="Magent">\n' +
+	'{{PodcastEpisode|title=Ep 1|guest=Del McCoury}}\n</proposed>';
+const bareBlock = '{{PodcastEpisode|title=Ep 1|guest=Del McCoury}}';
+
+check( 'an unreviewed block stays unreviewed after a clean rewrite',
+	rewrite( proposedBlock, bareBlock ) === proposedBlock,
+	rewrite( proposedBlock, bareBlock ) );
+
+check( 'changed data is still marked, not restored',
+	( () => {
+		const out = rewrite( proposedBlock,
+			'{{PodcastEpisode|title=Ep 1|guest=Ronnie McCoury}}' );
+		return out.includes( 'Ronnie McCoury' ) && out.includes( '<proposed' );
+	} )(),
+	rewrite( proposedBlock, '{{PodcastEpisode|title=Ep 1|guest=Ronnie McCoury}}' ) );
+
+const proposedPre = '<proposed by="Magent">\n<pre class="guest-patterns">\n^A$\n</pre>\n</proposed>';
+check( 'a marked <pre> config block survives too',
+	rewrite( proposedPre, '<pre class="guest-patterns">\n^A$\n</pre>' ) === proposedPre,
+	rewrite( proposedPre, '<pre class="guest-patterns">\n^A$\n</pre>' ) );
 
 console.log( failures === 0 ? '\nAll checks passed.\n' : `\n${ failures } FAILED\n` );
 process.exit( failures === 0 ? 0 : 1 );
