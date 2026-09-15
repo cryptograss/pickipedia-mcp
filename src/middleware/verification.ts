@@ -178,12 +178,19 @@ export function buildLineSet( source: string ): Map<string, string> {
 
 	const flushParagraph = (): void => {
 		if ( currentParagraph.length > 0 ) {
+			// Paragraphs are *matched* joined, since a single newline in prose
+			// renders as a space and rewrapping a sentence changes nothing. But
+			// they are *stored* with their line breaks, because the wiki's gate
+			// compares revisions line by line: hand back the joined form and a
+			// caption written over two lines comes back as one line the gate has
+			// never seen, unmarked, and the whole edit is refused
+			// (pickipedia-mcp#25).
 			const text = currentParagraph.join( ' ' ).trim();
 			const normalized = normalizeLine( text );
 			// First occurrence wins. A page holding the same sentence twice,
 			// once verified and once not, should keep the verified one.
 			if ( normalized && !found.has( normalized ) ) {
-				found.set( normalized, text );
+				found.set( normalized, currentParagraph.join( '\n' ) );
 			}
 			currentParagraph = [];
 		}
@@ -564,8 +571,16 @@ function wrapListItemContent( line: string, existingLines?: Map<string, string> 
 	// Content already on the page goes back as the page had it, markers and
 	// all. Emitting what the caller sent would strip whatever state a human
 	// left the line in — see flushParagraph() for the same reasoning.
+	// A list item is one line, so a match that spans several — a paragraph that
+	// happens to say the same thing — is not this item and is not restored here.
 	const asStored = existingLines?.get( normalizeLine( content ) );
-	if ( asStored !== undefined ) {
+	if ( asStored !== undefined && !asStored.includes( '\n' ) ) {
+		// Unchanged and unmarked: hand the line back byte for byte. Rebuilding
+		// it as "prefix, space, content" turns "*foo" into "* foo", which the
+		// wiki's gate compares line by line and reads as a new, unmarked claim.
+		if ( asStored === content ) {
+			return line;
+		}
 		return `${ prefix } ${ asStored }`;
 	}
 
@@ -700,7 +715,9 @@ export function wrapProseWithBotProposes(
 					result.push( markInlineContent( text ) );
 				}
 			} else if ( text ) {
-				result.push( text );
+				// Already marked or verified: nothing to add, so nothing to
+				// rewrite either. The caller's own lines go back as they came.
+				result.push( currentParagraph.join( '\n' ) );
 			}
 			currentParagraph = [];
 		}

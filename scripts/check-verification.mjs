@@ -432,5 +432,73 @@ check( 'a marked <pre> config block survives too',
 	rewrite( proposedPre, '<pre class="guest-patterns">\n^A$\n</pre>' ) === proposedPre,
 	rewrite( proposedPre, '<pre class="guest-patterns">\n^A$\n</pre>' ) );
 
+// The wiki's gate (PickiPediaVerification, firstUnmarkedNewLine) compares
+// revisions line by line: every line of the saved text must already be on the
+// page, sit inside a marker, or be a line that cannot carry one. A cut-down
+// copy of it, so these checks ask the question the wiki will actually ask.
+function gateRefuses( oldSrc, savedSrc ) {
+	const norm = ( l ) => l.replace( /\s+/g, ' ' ).trim();
+	const existing = new Set( oldSrc.split( '\n' ).map( norm ).filter( Boolean ) );
+	const lines = savedSrc.split( '\n' );
+	let inTag = false;
+	for ( const line of lines ) {
+		let marked = inTag;
+		if ( inTag ) {
+			inTag = !/<\/proposed\s*>/i.test( line );
+		} else if ( /<proposed[\s>]/i.test( line ) ) {
+			marked = true;
+			inTag = !/<\/proposed\s*>/i.test( line );
+		}
+		if ( /\{\{Bot_proposes/i.test( line ) ) {
+			marked = true;
+		}
+		const n = norm( line );
+		const exempt = /^(==|\[\[Category:|\{\||\|\}|\||!|\}\}$)/.test( n ) ||
+			/^[*#:;]+\s*\[\[[^\]]+\]\]\s*$/.test( n );
+		if ( n && !marked && !existing.has( n ) && !exempt ) {
+			return n;
+		}
+	}
+	return null;
+}
+
+// pickipedia-mcp#25. Arkansauce's photo caption ran over two lines. Adding a
+// section elsewhere on the page came back with the caption joined into one
+// line, which the gate had never seen, and every edit to the page was refused.
+console.log( '\nUnchanged paragraphs keep their line breaks:' );
+
+const twoLineCaption = "[[File:Band.jpg|200px|right|thumb|\n''The band on stage.]]";
+const captionPage = `Intro sentence.\n\n${ twoLineCaption }\n\n== Lineup ==\n\nTBD.`;
+const captionEdit = captionPage.replace( 'TBD.', '* {{m|Tom Andersen}} — bass' );
+const captionOut = rewrite( captionPage, captionEdit );
+
+check( 'a two-line caption comes back on two lines',
+	captionOut.includes( twoLineCaption ), captionOut );
+check( 'the new lineup is still marked',
+	captionOut.includes( '<proposed by="Magent">{{m|Tom Andersen}} — bass</proposed>' ), captionOut );
+check( 'the gate accepts the edit', gateRefuses( captionPage, captionOut ) === null,
+	`refused on: ${ gateRefuses( captionPage, captionOut ) }` );
+
+const wrappedProse = 'Bill Monroe was born\nin Rosine, Kentucky.';
+check( 'a clean rewrite of wrapped prose is byte for byte',
+	rewrite( wrappedProse, wrappedProse ) === wrappedProse, rewrite( wrappedProse, wrappedProse ) );
+check( 'rewrapping it onto one line restores the page\'s own line breaks',
+	rewrite( wrappedProse, 'Bill Monroe was born in Rosine, Kentucky.' ) === wrappedProse,
+	rewrite( wrappedProse, 'Bill Monroe was born in Rosine, Kentucky.' ) );
+
+// A marker opening a line is read as a template block and never reaches the
+// paragraph code, so the case worth checking is a marker at the end of prose.
+const verifiedTwoLines = 'Bill Monroe was born\nin Rosine, Kentucky.{{verified|I was there}}';
+check( 'an already-verified paragraph keeps its line breaks too',
+	rewrite( '', verifiedTwoLines ) === verifiedTwoLines, rewrite( '', verifiedTwoLines ) );
+
+const tightList = '*Played the Ryman.';
+check( 'an unchanged list item keeps its own spacing',
+	rewrite( tightList, tightList ) === tightList, rewrite( tightList, tightList ) );
+
+check( 'a list item is not restored from a multi-line paragraph',
+	!rewrite( 'Played the\nRyman.', '* Played the Ryman.' ).includes( '\n' ),
+	rewrite( 'Played the\nRyman.', '* Played the Ryman.' ) );
+
 console.log( failures === 0 ? '\nAll checks passed.\n' : `\n${ failures } FAILED\n` );
 process.exit( failures === 0 ? 0 : 1 );
