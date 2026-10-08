@@ -9,7 +9,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { wrapProseWithBotProposes, computeProtectedLines, buildLineSet, buildBlockSet } from
+import { wrapProseWithBotProposes, computeProtectedLines, buildLineSet, buildBlockSet, isExemptPage } from
 	'../dist/middleware/verification.js';
 import { ContentFormat, getSubEndpoint } from
 	'../dist/common/mwRestApiContentFormat.js';
@@ -431,6 +431,15 @@ const proposedPre = '<proposed by="Magent">\n<pre class="guest-patterns">\n^A$\n
 check( 'a marked <pre> config block survives too',
 	rewrite( proposedPre, '<pre class="guest-patterns">\n^A$\n</pre>' ) === proposedPre,
 	rewrite( proposedPre, '<pre class="guest-patterns">\n^A$\n</pre>' ) );
+
+// A Mood's to-do list is a working list, not claims: never marked.
+check( "a Mood's to-do list is exempt", isExemptPage( 'Cryptograss:Moods/magenta-interface/todo' ) );
+check( 'as the API spells it too', isExemptPage( 'Cryptograss:Moods/jams_and_events/todo' ) );
+check( 'other Cryptograss pages are not', !isExemptPage( 'Cryptograss:Moods/magenta-interface' )
+	&& !isExemptPage( 'Cryptograss:Magenta 26 Million' ) && !isExemptPage( 'Cryptograss:Moods/a/b/todo' ) );
+check( 'a main-namespace page named like one is not', !isExemptPage( 'Moods/x/todo' ) );
+check( 'exempt namespaces still are', isExemptPage( 'Template:Infobox' ) && isExemptPage( 'User_talk:JMyles' )
+	&& isExemptPage( 'User talk:JMyles' ) && isExemptPage( 'Cryptograss talk:Moods' ) );
 
 console.log( failures === 0 ? '\nAll checks passed.\n' : `\n${ failures } FAILED\n` );
 process.exit( failures === 0 ? 0 : 1 );

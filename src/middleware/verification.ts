@@ -27,6 +27,19 @@ const EXEMPT_NAMESPACES = [
 ];
 
 /**
+ * Pages exempt from verification wherever they are.
+ *
+ * A Mood's to-do list (memory-lane services/todo.py) is a working list of who
+ * has to do what -- merges, reviews, deploys -- that agents keep current as
+ * they go, not claims about the world. Marked as proposals, every tick and
+ * every new item waited in the review queue, and the queue filled with
+ * chores; the people who use the list asked for it to be exempt.
+ */
+const EXEMPT_PAGES = [
+	/^Cryptograss:Moods\/[^/]+\/todo$/i
+];
+
+/**
  * Fetch the source content of a revision.
  *
  * The endpoint comes from getSubEndpoint() rather than a literal, because the
@@ -220,8 +233,8 @@ export function buildLineSet( source: string ): Map<string, string> {
  * @return {boolean} True if edits to this page skip verification.
  */
 function isExemptNamespace( title: string ): boolean {
-	// Check for talk pages (any namespace ending in _talk)
-	if ( /_talk:/i.test( title ) ) {
+	// Check for talk pages (any namespace ending in talk, as "User_talk:" or "User talk:")
+	if ( /[_ ]talk:/i.test( title ) ) {
 		return true;
 	}
 
@@ -237,6 +250,17 @@ function isExemptNamespace( title: string ): boolean {
 	return EXEMPT_NAMESPACES.some(
 		( ns ) => namespace.toLowerCase() === ns.toLowerCase()
 	);
+}
+
+/**
+ * Check if edits to a page skip verification: its namespace is exempt, or it is.
+ *
+ * @param {string} title Full page title, namespace prefix included.
+ * @return {boolean} True if edits to this page skip verification.
+ */
+export function isExemptPage( title: string ): boolean {
+	const normal = title.replace( /_/g, ' ' ).trim();
+	return isExemptNamespace( title ) || EXEMPT_PAGES.some( ( pattern ) => pattern.test( normal ) );
 }
 
 /**
@@ -851,15 +875,15 @@ function applyVerification(
  * ensuring bot content goes through the verification workflow.
  *
  * Exempt namespaces (Template, Talk, User, MediaWiki, Special, *_talk)
- * are not modified.
+ * and exempt pages (a Mood's to-do list) are not modified.
  */
 export const verificationMiddleware: Middleware = {
 	name: 'verification',
 
 	async onInput( context: EditContext ): Promise<EditContext> {
-		// Check if this namespace is exempt from verification
-		if ( isExemptNamespace( context.title ) ) {
-			console.error( `[verification] ${ context.title }: exempt namespace, skipping` );
+		// Check if this page (or its namespace) is exempt from verification
+		if ( isExemptPage( context.title ) ) {
+			console.error( `[verification] ${ context.title }: exempt, skipping` );
 			return context;
 		}
 
@@ -901,7 +925,7 @@ export const verificationMiddleware: Middleware = {
 	async onOutput( context: EditContext, result: CallToolResult ): Promise<CallToolResult> {
 		// Only add verification note if this namespace is NOT exempt
 		// (exempt namespaces don't go through verification workflow)
-		if ( !result.isError && result.content && !isExemptNamespace( context.title ) ) {
+		if ( !result.isError && result.content && !isExemptPage( context.title ) ) {
 			const note: TextContent = {
 				type: 'text',
 				text: '⚠️ This edit was automatically marked as "proposed" and requires human verification.'
