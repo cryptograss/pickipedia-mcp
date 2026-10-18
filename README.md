@@ -15,10 +15,11 @@ An MCP (Model Context Protocol) server that enables Large Language Model (LLM) c
 | `get-category-members` | Gets all members in the category | - |
 | `get-file` | Returns the standard file object for a file page. | - |
 | `get-page` | Returns the standard page object for a wiki page. | - |
+| `get-pages` | Returns the source of up to 50 pages at once, each with who last edited it and when. | - |
 | `get-page-history` | Returns information about the latest revisions to a wiki page. | - |
 | `get-revision` | Returns the standard revision object for a page. | - |
 | `remove-wiki` | Removes a wiki resource. | - |
-| `search-page` | Search wiki page titles and contents for the provided search terms. | - |
+| `search-page` | Search wiki page titles and contents for the provided search terms; with a namespace or title prefix (`Agent:Magent/`), only there, with a snippet of each match. | - |
 | `search-page-by-prefix` | Perform a prefix search for page titles. | - |
 | `set-wiki` | Sets the wiki resource to use for the current session. | - |
 | `undelete-page` 🔐 | Undelete a wiki page. | `Delete pages, revisions, and log entries` |
