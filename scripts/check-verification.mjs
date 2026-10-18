@@ -438,6 +438,9 @@ check( 'as the API spells it too', isExemptPage( 'Cryptograss:Moods/jams_and_eve
 check( 'other Cryptograss pages are not', !isExemptPage( 'Cryptograss:Moods/magenta-interface' )
 	&& !isExemptPage( 'Cryptograss:Magenta 26 Million' ) && !isExemptPage( 'Cryptograss:Moods/a/b/todo' ) );
 check( 'a main-namespace page named like one is not', !isExemptPage( 'Moods/x/todo' ) );
+check( "an agent's notes are exempt", isExemptPage( 'Agent:Magent' ) && isExemptPage( 'Agent:Re/Hunter docs' )
+	&& isExemptPage( 'Agent talk:Magent' ) && isExemptPage( 'Agent_talk:Magent' ) );
+check( 'a main-namespace page about agents is not', !isExemptPage( 'Agents of cryptograss' ) );
 check( 'exempt namespaces still are', isExemptPage( 'Template:Infobox' ) && isExemptPage( 'User_talk:JMyles' )
 	&& isExemptPage( 'User talk:JMyles' ) && isExemptPage( 'Cryptograss talk:Moods' ) );
 

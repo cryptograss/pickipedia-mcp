@@ -23,7 +23,11 @@ const EXEMPT_NAMESPACES = [
 	'Special',
 	'Module',
 	'Form',
-	'PickiPedia' // Bot config and meta pages
+	'PickiPedia', // Bot config and meta pages
+	// The agents' own notes, and the docs they read for their work: only the
+	// agents and sysops can edit it (the wiki's agent-edit right), and what an
+	// agent keeps for itself is not a claim waiting to be verified.
+	'Agent'
 ];
 
 /**
