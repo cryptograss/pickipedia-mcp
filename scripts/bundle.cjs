@@ -26,7 +26,9 @@ function cleanupManifest() {
 
 function buildBundle() {
 	console.log('Running mcpb pack...');
-	execSync('npx mcpb pack', { stdio: 'inherit' });
+	// Named, not left to mcpb: it names the bundle after the folder, and a fork's checkout
+	// isn't called MediaWiki-MCP-Server, so clean couldn't find it.
+	execSync(`npx mcpb pack "${ROOT_DIR}" "${path.join(ROOT_DIR, MCPB_FILE)}"`, { stdio: 'inherit' });
 }
 
 function cleanBundle() {
