@@ -22,6 +22,7 @@ describe('create-page', () => {
 				newrevid: 1,
 				newtimestamp: '2026-01-01T00:00:00Z',
 			}),
+			options: { apiUrl: 'https://wiki.example/api.php', username: 'Magent@magent' } as never,
 		});
 		const ctx = fakeContext({ mwn: async () => mock as never });
 
@@ -43,9 +44,10 @@ describe('create-page', () => {
 		expect(text).toContain('Content model: wikitext');
 		expect(text).toContain('URL: ');
 		expect(text).toContain('/wiki/New_Page');
+		// PickiPedia: a bot's new prose goes up marked (tests/pickipedia/marking.test.ts).
 		expect(mock.create).toHaveBeenCalledWith(
 			'New Page',
-			'Hello',
+			'{{Bot_proposes|Hello|by=Magent}}',
 			expect.stringContaining('test'),
 			expect.objectContaining({ contentmodel: 'wikitext' }),
 		);

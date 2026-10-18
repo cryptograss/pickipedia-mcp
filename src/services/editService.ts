@@ -2,6 +2,7 @@ import type { ApiParams, Mwn } from 'mwn';
 import type { ApiUploadParams } from 'types-mediawiki-api';
 import type { ApiUploadResponse } from 'mwn';
 import type { ActiveWiki } from '../wikis/activeWiki.ts';
+import { markEditParams } from '../middleware/verification.ts';
 
 export interface EditService {
 	/** Wraps mwn.request with CSRF + tag injection + formatversion=2. For action:edit and similar. */
@@ -77,6 +78,9 @@ export class EditServiceImpl implements EditService {
 	}
 
 	public async submit(mwn: Mwn, params: Record<string, unknown>): Promise<unknown> {
+		// PickiPedia: a bot's new and changed prose goes up marked as proposed,
+		// as the wiki's verification gate requires (middleware/verification.ts).
+		params = await markEditParams(mwn, params);
 		const token = await mwn.getCsrfToken();
 		const tags = this.activeWiki.get().config.tags;
 		const fullParams: Record<string, unknown> = { ...params, token, formatversion: '2' };

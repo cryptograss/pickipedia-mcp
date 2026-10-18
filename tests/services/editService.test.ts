@@ -22,13 +22,15 @@ describe('EditServiceImpl', () => {
 		const mock = createMockMwn({
 			getCsrfToken: vi.fn().mockResolvedValue('CSRFTOKEN'),
 			request: vi.fn().mockResolvedValue({ ok: true }),
+			options: { apiUrl: 'https://wiki.example/api.php', username: 'Magent@magent' } as never,
 		});
 		const edit = new EditServiceImpl(fakeActiveWiki('mcp-edit'));
 		await edit.submit(mock as never, { action: 'edit', title: 'Foo', text: 'bar' });
+		// PickiPedia: a bot's new prose goes up marked (tests/pickipedia/marking.test.ts).
 		expect(mock.request).toHaveBeenCalledWith({
 			action: 'edit',
 			title: 'Foo',
-			text: 'bar',
+			text: '{{Bot_proposes|bar|by=Magent}}',
 			token: 'CSRFTOKEN',
 			formatversion: '2',
 			tags: 'mcp-edit',

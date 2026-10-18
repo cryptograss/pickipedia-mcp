@@ -6,6 +6,7 @@ import type { ToolContext } from '../runtime/context.ts';
 import { buildPageUrl, formatEditComment } from '../wikis/utils.ts';
 import { contentMaxBytes } from '../results/truncation.ts';
 import { editableChildrenOf } from '../services/sectionSubtree.ts';
+import { isExemptPage, PROPOSED_NOTE } from '../middleware/verification.ts';
 
 const OPERATIONS = ['replace', 'append', 'prepend', 'find-replace'] as const;
 type Operation = (typeof OPERATIONS)[number];
@@ -377,6 +378,7 @@ async function submitEdit(
 		contentModel: edit.contentmodel,
 		...(args.bot === true ? { botMarked: await ctx.edit.botRight(mwn) } : {}),
 		url: await buildPageUrl(ctx, resolvedTitle),
+		...(isExemptPage(resolvedTitle) ? {} : { verification: PROPOSED_NOTE }),
 	});
 }
 
