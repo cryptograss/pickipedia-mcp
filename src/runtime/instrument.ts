@@ -1,0 +1,166 @@
+import { createHash } from 'node:crypto';
+import type { CallToolResult } from '@modelcontextprotocol/server';
+import { emitTelemetryEvent } from './logger.ts';
+import { recordToolCall } from './metrics.ts';
+import { monotonicNow } from './clock.ts';
+import type { ErrorCategory } from '../errors/classifyError.ts';
+
+// `cancelled` sits alongside ErrorCategory rather than inside it: the caller
+// walked away, which is not a fault to classify or to shape into a response.
+// It only needs to be distinguishable in the logs and the metric.
+export type ToolOutcome = 'success' | 'cancelled' | ErrorCategory;
+
+const WARNING_OUTCOMES: ReadonlySet<ToolOutcome> = new Set([
+	'not_found',
+	'invalid_input',
+	'permission_denied',
+	'conflict',
+	'authentication',
+	'rate_limited',
+]);
+
+export function levelFor(outcome: ToolOutcome): 'info' | 'warning' | 'error' {
+	// A cancellation is ordinary client behaviour, not a degradation.
+	if (outcome === 'success' || outcome === 'cancelled') {
+		return 'info';
+	}
+	if (outcome === 'upstream_failure') {
+		return 'error';
+	}
+	return WARNING_OUTCOMES.has(outcome) ? 'warning' : 'error';
+}
+
+export function hashCaller(token: string | undefined): string {
+	if (!token) {
+		return 'anonymous';
+	}
+	const hex = createHash('sha256').update(token).digest('hex');
+	return `sha256:${hex.slice(0, 12)}`;
+}
+
+export interface ParsedEnvelope {
+	category?: ErrorCategory;
+	message?: string;
+}
+
+/**
+ * Narrows an unknown JSON value to a ParsedEnvelope. Both fields are
+ * optional, so the predicate verifies "object shape with compatibly-typed
+ * fields if present" rather than enforcing any required key. Unknown
+ * `category` strings still pass through; downstream callers compare them
+ * against the ErrorCategory union and ignore mismatches.
+ */
+function isParsedEnvelope(obj: unknown): obj is ParsedEnvelope {
+	if (obj === null || typeof obj !== 'object') {
+		return false;
+	}
+	if ('category' in obj && obj.category !== undefined && typeof obj.category !== 'string') {
+		return false;
+	}
+	if ('message' in obj && obj.message !== undefined && typeof obj.message !== 'string') {
+		return false;
+	}
+	return true;
+}
+
+export function parseEnvelope(text: string | undefined): ParsedEnvelope {
+	if (!text) {
+		return {};
+	}
+	try {
+		const obj: unknown = JSON.parse(text);
+		if (isParsedEnvelope(obj)) {
+			return obj;
+		}
+	} catch {
+		// leave empty
+	}
+	return {};
+}
+
+export function detectTruncation(result: CallToolResult): boolean {
+	const sc = result.structuredContent;
+	if (sc !== undefined && sc !== null && typeof sc === 'object') {
+		return 'truncation' in sc;
+	}
+	return false;
+}
+
+export function extractUpstreamStatus(err: unknown): number | undefined {
+	if (err !== null && typeof err === 'object') {
+		const response = (err as { response?: { status?: unknown } }).response;
+		if (response && typeof response.status === 'number') {
+			return response.status;
+		}
+	}
+	return undefined;
+}
+
+export function safeTarget<TArgs>(
+	target: ((args: TArgs) => string) | undefined,
+	args: TArgs,
+): string {
+	if (target === undefined) {
+		return '';
+	}
+	try {
+		return target(args);
+	} catch {
+		return '';
+	}
+}
+
+export interface EmitToolCallOptions<TArgs> {
+	readonly toolName: string;
+	readonly target?: (args: TArgs) => string;
+	readonly args: TArgs;
+	readonly started: number;
+	readonly result: CallToolResult;
+	readonly outcome: ToolOutcome;
+	readonly upstreamStatus: number | undefined;
+	readonly errorMessage: string | undefined;
+	readonly runtimeToken: string | undefined;
+	readonly wikiKey: string;
+}
+
+export function emitToolCall<TArgs>(opts: EmitToolCallOptions<TArgs>): void {
+	const level = levelFor(opts.outcome);
+	const targetValue = safeTarget(opts.target, opts.args);
+	const truncated = opts.outcome === 'success' ? detectTruncation(opts.result) : false;
+	const durationMs = Math.round(monotonicNow() - opts.started);
+	// Snake-case keys are required by the structured log schema.
+	const data: Record<string, unknown> = {
+		event: 'tool_call',
+		tool: opts.toolName,
+		wiki: opts.wikiKey,
+		outcome: opts.outcome,
+		duration_ms: durationMs,
+		caller: hashCaller(opts.runtimeToken),
+		truncated,
+	};
+	if (targetValue !== '') {
+		data.target = targetValue;
+	}
+	if (opts.upstreamStatus !== undefined) {
+		data.upstream_status = opts.upstreamStatus;
+	}
+	if (opts.errorMessage !== undefined) {
+		data.error_message = opts.errorMessage;
+	}
+	emitTelemetryEvent(level, data);
+	// Telemetry must never break tool calls — the dispatcher does not wrap
+	// emitToolCall in its own try/catch, so an unexpected throw from the
+	// metrics path would propagate up and fail the call. The stderr line
+	// above has already flushed, so we still have an operator-visible record.
+	try {
+		recordToolCall({
+			tool: opts.toolName,
+			wiki: opts.wikiKey,
+			outcome: opts.outcome,
+			durationMs,
+			upstreamStatus: opts.upstreamStatus,
+		});
+	} catch {
+		// swallow
+	}
+}

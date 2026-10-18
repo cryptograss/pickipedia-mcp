@@ -1,86 +1,71 @@
 import { z } from 'zod';
-/* eslint-disable n/no-missing-import */
-import type { McpServer, RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult, TextContent, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
-/* eslint-enable n/no-missing-import */
-import { makeRestPostRequest, getPageUrl, formatEditComment } from '../common/utils.js';
-import type { MwRestApiPageObject } from '../types/mwRestApi.js';
-import { pipeline } from '../middleware/index.js';
-import type { EditContext } from '../middleware/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
+import type { ApiEditPageParams } from 'types-mediawiki-api';
+import type { Tool } from '../runtime/tool.ts';
+import type { ToolContext } from '../runtime/context.ts';
+import { buildPageUrl, formatEditComment } from '../wikis/utils.ts';
 
-export function createPageTool( server: McpServer ): RegisteredTool {
-	return server.tool(
-		'create-page',
-		'Creates a wiki page with the provided content.',
-		{
-			source: z.string().describe( 'Page content in the format specified by the contentModel parameter' ),
-			title: z.string().describe( 'Wiki page title' ),
-			comment: z.string().optional().describe( 'Reason for creating the page' ),
-			contentModel: z.string().optional().default( 'wikitext' ).describe( 'Type of content on the page' )
-		},
-		{
-			title: 'Create page',
-			readOnlyHint: false,
-			destructiveHint: true
-		} as ToolAnnotations,
-		async (
-			{ source, title, comment, contentModel }
-		) => {
-			const context: EditContext = {
-				tool: 'create-page',
-				title,
-				source,
-				comment,
-				contentModel
-			};
-			return pipeline.wrapHandler( context, handleCreatePageToolWithContext );
+const inputSchema = {
+	source: z.string().describe('Page content in the format specified by the contentModel parameter'),
+	title: z.string().describe('Wiki page title'),
+	comment: z.string().optional().describe('Reason for creating the page'),
+	contentModel: z
+		.string()
+		.optional()
+		.describe(
+			"Content model of the new page. If omitted, MediaWiki picks the default for the title's namespace.",
+		),
+	bot: z
+		.boolean()
+		.optional()
+		.describe(
+			'Marks the edit as a bot edit, which Special:RecentChanges hides by default. Takes effect only when the authenticated account has the `bot` right (granted by the bot group, or by the high-volume grant on a bot password or OAuth consumer); without it the edit saves unflagged and the response reports botMarked: false. Use when performing bulk or automated edit runs, or when the user requests it.',
+		),
+} as const;
+
+export const createPage: Tool<typeof inputSchema> = {
+	name: 'create-page',
+	description:
+		"Creates a new wiki page with the provided content and returns the new page's title, page ID, and first revision ID. Fails if a page with the given title already exists; for existing pages, use update-page. The optional contentModel parameter selects a non-default content format (e.g. javascript, css); when omitted, MediaWiki picks the default for the title's namespace. For building up a large page across multiple calls, pair create-page with chained update-page(operation='append') calls, each adding a chunk.",
+	inputSchema,
+	annotations: {
+		title: 'Create page',
+		readOnlyHint: false,
+		destructiveHint: false,
+		idempotentHint: true,
+		openWorldHint: true,
+	},
+	failureVerb: 'create page',
+	target: (a) => a.title,
+
+	async handle(
+		{ source, title, comment, contentModel, bot },
+		ctx: ToolContext,
+	): Promise<CallToolResult> {
+		const mwn = await ctx.mwn();
+		const baseOptions: ApiEditPageParams = {};
+		if (contentModel !== undefined) {
+			baseOptions.contentmodel = contentModel;
 		}
-	);
-}
-
-async function handleCreatePageToolWithContext( context: EditContext ): Promise<CallToolResult> {
-	let data: MwRestApiPageObject;
-
-	try {
-		data = await makeRestPostRequest<MwRestApiPageObject>( '/v1/page', {
-			source: context.source,
-			title: context.title,
-			comment: formatEditComment( 'create-page', context.comment ),
-			// eslint-disable-next-line camelcase
-			content_model: context.contentModel
-		}, true );
-	} catch ( error ) {
-		return {
-			content: [
-				{ type: 'text', text: `Failed to create page: ${ ( error as Error ).message }` } as TextContent
-			],
-			isError: true
-		};
-	}
-
-	return {
-		content: createPageToolResult( data )
-	};
-}
-
-function createPageToolResult( result: MwRestApiPageObject ): TextContent[] {
-	return [
-		{
-			type: 'text',
-			text: `Page created successfully: ${ getPageUrl( result.title ) }`
-		},
-		{
-			type: 'text',
-			text: [
-				'Page object:',
-				`Page ID: ${ result.id }`,
-				`Title: ${ result.title }`,
-				`Latest revision ID: ${ result.latest.id }`,
-				`Latest revision timestamp: ${ result.latest.timestamp }`,
-				`Content model: ${ result.content_model }`,
-				`License: ${ result.license.url } ${ result.license.title }`,
-				`HTML URL: ${ result.html_url }`
-			].join( '\n' )
+		if (bot === true) {
+			baseOptions.bot = true;
 		}
-	];
-}
+		const options = ctx.edit.applyTags<ApiEditPageParams>(baseOptions);
+		const result = await mwn.create(
+			title,
+			source,
+			formatEditComment(ctx, 'create-page', comment),
+			options,
+		);
+
+		return ctx.format.ok({
+			pageId: result.pageid,
+			title: result.title,
+			latestRevisionId: result.newrevid,
+			latestRevisionTimestamp: result.newtimestamp,
+			contentModel: result.contentmodel,
+			...(bot === true ? { botMarked: await ctx.edit.botRight(mwn) } : {}),
+			url: await buildPageUrl(ctx, result.title),
+		});
+	},
+};

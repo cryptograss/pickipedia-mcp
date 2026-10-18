@@ -1,0 +1,283 @@
+# Testing
+
+Reference for unit tests, integration testing against a real wiki, and the local wiki setup needed to exercise authenticated tools.
+
+> [!TIP]
+> 🐋 Commands that use `npm run <script>` have a Makefile equivalent — run `make <script>` instead (e.g. `make test`, `make inspector`). The MCP Inspector CLI examples below use `npx` directly and have no Makefile target.
+
+## Unit tests
+
+Tests use [Vitest](https://vitest.dev/). Each tool exports a `Tool<TSchema>` descriptor from `src/tools/<name>.ts`; tests import the descriptor and route through `dispatch( descriptor, ctx )` from `src/runtime/dispatcher.ts`.
+
+Build a `ToolContext` per test via `fakeContext()` from `tests/helpers/fakeContext.ts`. Override only the slices the test exercises — by default unstubbed methods throw, so tests fail loudly when they reach for something they didn't mean to:
+
+```typescript
+import { describe, it, expect, vi } from 'vitest';
+import { fakeContext } from '../helpers/fakeContext.ts';
+import { createMockMwn } from '../helpers/mock-mwn.ts';
+import { dispatch } from '../../src/runtime/dispatcher.ts';
+import { getPage } from '../../src/tools/get-page.ts';
+
+it( 'returns page source', async () => {
+	const mwn = createMockMwn( { read: vi.fn().mockResolvedValue( /* … */ ) } );
+	const ctx = fakeContext( { mwn: async () => mwn as never } );
+	const result = await getPage.handle( { title: 'Foo' /* … */ }, ctx );
+	// assertions
+} );
+
+it( 'maps missingtitle to not_found via the dispatcher', async () => {
+	const mwn = createMockMwn( { read: vi.fn().mockRejectedValue( /* … */ ) } );
+	const ctx = fakeContext( { mwn: async () => mwn as never } );
+	const result = await dispatch( getPage, ctx )( { title: 'Missing' } );
+	// assertions
+} );
+```
+
+Happy-path tests typically call `descriptor.handle( args, ctx )` directly. Error-classification tests go through `dispatch( descriptor, ctx )` so the dispatcher's classification + special-case + format.error pipeline runs end-to-end. Tests asserting on what the schema itself accepts or refuses go through `callTool` instead, since neither `handle` nor `dispatch` parses raw arguments against it.
+
+Use `createMockMwn()` from `tests/helpers/mock-mwn.ts` to create mock `mwn` instances with method overrides. See existing test files under `tests/tools/` for the full pattern.
+
+Reach for a shared fixture rather than spelling a literal out. A field added to the real type then breaks in one place, instead of drifting silently through every suite that happened to write the literal by hand:
+
+- `fakeLogger()` — a `Logger` double covering all eight levels.
+- `fakeProxyConfig()` — a complete `ProxyConfig`.
+- `mockedLookupAll()` — the `node:dns/promises` `lookup` mock, typed at the `{ all: true }` overload production calls.
+- `toolArgs( tool, partial )` — runs partial input through a tool's own schema, so `.default()` values arrive the way a real call delivers them.
+
+Run:
+
+```sh
+npm test           # one-shot
+npm run test:watch # watch mode
+npm run typecheck  # tsc over src + tests
+```
+
+## MCP Inspector (UI)
+
+Test and debug the MCP server interactively without an MCP client or LLM.
+
+```sh
+npm run inspector
+```
+
+Starts a watch-mode TypeScript build plus the MCP Proxy server on port `6277` and the Inspector UI at http://localhost:6274.
+
+## MCPJam Inspector
+
+Like the MCP Inspector, but with a built-in MCP client that can drive the server against different LLMs — useful for checking how a given LLM actually calls the tools.
+
+```sh
+npm run mcpjam
+```
+
+## MCPJam CLI checks
+
+Token-free structural checks against the built server: a stdio doctor sweep plus an MCP protocol conformance run against the HTTP transport. Build first with `npm run build`, then:
+
+```sh
+npm run check:mcp
+```
+
+Both use the minimal wiki configuration in `scripts/mcp-checks.config.json`, so results do not depend on your local `config.json`. The conformance run binds `127.0.0.1:3117`; set `PORT` to use a different port. CI runs the same script on every pull request, and additionally diffs the tool surface against the PR base — a removed or renamed tool fails the job, while description changes only show up in the report.
+
+## MCP Inspector CLI (integration tests)
+
+The [MCP Inspector CLI](https://github.com/modelcontextprotocol/inspector) exercises tools against a real wiki. Build first with `npm run build`, then:
+
+```bash
+# List all tools
+npx @modelcontextprotocol/inspector --cli node dist/index.js \
+  --method tools/list
+
+# Call a tool
+npx @modelcontextprotocol/inspector --cli node dist/index.js \
+  --method tools/call \
+  --tool-name get-page \
+  --tool-arg 'title=Main Page' \
+  --tool-arg 'metadata=true'
+
+# Read a resource
+npx @modelcontextprotocol/inspector --cli node dist/index.js \
+  --method resources/read \
+  --uri 'mcp://wikis/en.wikipedia.org'
+```
+
+Pass an optional `wiki` argument (a wiki key such as `en.wikipedia.org`, or the full `mcp://wikis/{wikiKey}` URI) to target a specific wiki on a given call. Omit it to use the `defaultWiki` set in `config.json`.
+
+## Using a local build from your MCP client
+
+To point an MCP client at a locally-built copy of the server:
+
+1. [Install](../README.md#installation) the server on the client.
+2. Replace the `command` and `args` values with:
+
+   ```json
+   "command": "node",
+   "args": ["/path/to/MediaWiki-MCP-Server/dist/index.js"]
+   ```
+
+   Or, to run the server in Docker:
+
+   ```json
+   "command": "docker",
+   "args": [
+     "run", "-i", "--rm",
+     "-v", "/path/to/MediaWiki-MCP-Server/:/home/node/app",
+     "-w", "/home/node/app",
+     "-u", "node",
+     "node:22",
+     "npm", "run", "start", "--silent"
+   ]
+   ```
+
+   The Docker variant mounts the repository at `/home/node/app`, so point `CONFIG` at a path inside the container.
+
+3. Run the `dev` command so sources recompile on save:
+
+   ```sh
+   npm run dev
+   ```
+
+## Local wiki setup (for authenticated tools)
+
+Authenticated tools (create, update, delete, undelete, protect, upload) need credentials.
+To create a bot password on a local MediaWiki running in Docker:
+
+```bash
+docker exec <container> php /var/www/html/maintenance/run.php createBotPassword \
+  --appid mcp-server \
+  --grants 'basic,highvolume,editpage,editprotected,createeditmovepage,delete,protect,uploadfile,uploadeditmovefile' \
+  <username>
+```
+
+(Adjust `/var/www/html` to your wiki's install path.)
+
+Then add the credentials to `config.json` (copy from `config.example.json` if it
+doesn't exist). Use environment-variable substitution to keep secrets out of the
+file:
+
+```json
+{
+  "username": "${MW_BOT_USER}",
+  "password": "${MW_BOT_PASSWORD}"
+}
+```
+
+For production authentication, use OAuth2 — see [Authentication](../README.md#authentication).
+To exercise the full browser sign-in flow of the hosted OAuth proxy end to end,
+see [End-to-end testing the hosted OAuth proxy](#end-to-end-testing-the-hosted-oauth-proxy) below.
+
+## End-to-end testing the hosted OAuth proxy
+
+A manual, repeatable walkthrough of the full browser sign-in flow — discovery,
+sign-in, upstream consent, token exchange, and an attributed write — against a
+real wiki. It needs no bundled environment: any MediaWiki container with
+Extension:OAuth works.
+
+### 1. Prerequisites and the environment contract
+
+You need a reachable MediaWiki container with **Extension:OAuth installed and
+OAuth2 enabled**, a known admin account, and a local build of this repo
+(`npm run build`). Any environment that satisfies the contract below works.
+
+Installing Extension:OAuth is not enough to issue OAuth2 tokens. The wiki also
+needs `$wgOAuth2PrivateKey` and `$wgOAuth2PublicKey` set, the admin account needs
+an email address, and that account needs `mwoauthproposeconsumer` and
+`mwoauthmanageconsumer` — rights Extension:OAuth grants to no group by default.
+The provisioning script checks all three and prints the fix for whatever is
+missing, so run it first and let it tell you.
+
+| Variable | Meaning | Source |
+|---|---|---|
+| `OAUTH2_CLIENT_ID` | Consumer key → `config.json` `oauth2ClientId` | provisioning script |
+| `MCP_OAUTH2_CLIENT_SECRET` | Consumer secret. The proxy refuses to start without it | provisioning script |
+| `MW_DEV_BOT_USER` / `MW_DEV_BOT_PASSWORD` | Static credentials for non-proxy auth tests | provisioning script |
+| `MCP_TRUSTED_HOSTS` | Outbound SSRF-guard exemption for a loopback/private wiki | provisioning script |
+| `MCP_PUBLIC_URL`, `MCP_OAUTH_JWT_SIGNING_KEY`, `PORT`, `MCP_TRANSPORT` | Proxy configuration | you |
+| wiki URL + admin credentials | The environment itself | you |
+
+### 2. Provision the consumer and bot password
+
+```bash
+set -a; eval "$( scripts/provision-dev-wiki.sh <container> )"; set +a
+```
+
+On a wiki whose Extension:OAuth is recent enough to register OAuth2 consumers
+from the command line, this registers an approved **confidential** OAuth 2.0
+consumer whose callback matches `${MCP_PUBLIC_URL}/oauth/callback`, creates a bot
+password, and exports `OAUTH2_CLIENT_ID`, `MCP_OAUTH2_CLIENT_SECRET`,
+`MW_DEV_BOT_USER`, `MW_DEV_BOT_PASSWORD`, and (for a loopback wiki)
+`MCP_TRUSTED_HOSTS`. Override the proxy base with `--public-url` if you run the
+server on a non-default port, and the install path with `--mw-path` if MediaWiki
+does not live at `/var/www/html` — MediaWiki core's own docker environment puts
+it at `/var/www/html/w`.
+
+The consumer must be confidential: the proxy authenticates with the secret to
+refresh upstream tokens, and refuses to start without one.
+
+On an older Extension:OAuth — for example the copy bundled with the MediaWiki
+1.43 LTS, whose `createOAuthConsumer.php` is OAuth1-only — the script cannot
+register the consumer from the command line. It prints step-by-step instructions
+to register it once in the browser at
+`Special:OAuthConsumerRegistration/propose/oauth2`, after which you set
+`OAUTH2_CLIENT_ID` and `MCP_OAUTH2_CLIENT_SECRET` yourself before starting the
+proxy. Tick "Client is confidential" there; the secret is shown once.
+
+### 3. Configure the wiki entry
+
+In `config.json`, point the wiki at the provisioned consumer (adjust
+`articlepath`/`scriptpath` to your wiki's layout):
+
+```json
+{
+  "defaultWiki": "localhost:8080",
+  "wikis": {
+    "localhost:8080": {
+      "sitename": "Dev MediaWiki",
+      "server": "http://localhost:8080",
+      "articlepath": "/wiki",
+      "scriptpath": "/w",
+      "oauth2ClientId": "${OAUTH2_CLIENT_ID}",
+      "oauth2ClientSecret": "${MCP_OAUTH2_CLIENT_SECRET}"
+    }
+  }
+}
+```
+
+### 4. Start the proxy
+
+```bash
+export MCP_TRANSPORT=http PORT=3000 MCP_PUBLIC_URL=http://localhost:3000/mcp
+export MCP_OAUTH_JWT_SIGNING_KEY="$(openssl rand -hex 32)"   # keep this FIXED across restarts
+node dist/index.js
+```
+
+`MCP_TRUSTED_HOSTS` and `MCP_OAUTH2_CLIENT_SECRET` (from step 2) are already
+exported. A changed signing key invalidates every issued token.
+
+### 5. Walk the sign-in flow
+
+Point an OAuth-aware MCP client at `http://localhost:3000/mcp` (the MCP
+Inspector's HTTP mode works) and start sign-in, or drive the endpoints directly:
+`GET /.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`
+(discovery) → `POST /mcp/register` (dynamic client registration) →
+open `/mcp/authorize?…` in a browser → `POST /mcp/token`.
+
+At the authorize step, **using your browser or a browser-automation tool**, sign
+in as the admin account and approve the consent screen(s). Expected: the browser
+returns to `http://localhost:3000/mcp/oauth/callback` and the client receives a
+proxy-issued bearer token.
+
+### 6. Verify
+
+- Call `whoami` → expected: the signed-in admin account. (`oauth-status` is
+  stdio-only and is not exposed over the HTTP proxy.)
+- Call `create-page` (any title/text) → expected: success, and the new
+  revision's author is the admin account — confirming the write is attributed to
+  the signed-in user, not a shared identity.
+
+### 7. Reset
+
+- `oauth-logout` (stdio) or restart the server to drop stored tokens.
+- Re-run step 2 to register a fresh consumer.
+- Rotating `MCP_OAUTH_JWT_SIGNING_KEY` signs everyone out on the next start.

@@ -1,0 +1,135 @@
+import { vi } from 'vitest';
+import type { ToolContext, ManagementContext } from '../../src/runtime/context.ts';
+import { ResponseFormatterImpl } from '../../src/results/response.ts';
+import { ErrorClassifierImpl } from '../../src/errors/classifyError.ts';
+import { extensionErrorVocabulary, extensionPacks } from '../../src/tools/extensions/index.ts';
+import { RevisionNormalizerImpl } from '../../src/services/revisionNormalize.ts';
+import { getRequestWiki } from '../../src/runtime/requestContext.ts';
+import { SiteInfoCacheImpl } from '../../src/wikis/siteInfoCache.ts';
+import { fakeLogger } from './fakeLogger.ts';
+
+const throws = (label: string) => () => {
+	throw new Error(`fakeContext: ${label} called but not stubbed`);
+};
+
+const testWikiConfig = {
+	sitename: 'Test',
+	server: 'https://test.wiki',
+	articlepath: '/wiki',
+	scriptpath: '/w',
+	tags: null,
+};
+
+// A small registry so dispatch()'s per-call wiki resolution can validate keys.
+const testWikiRegistry: Record<string, typeof testWikiConfig> = {
+	'test-wiki': testWikiConfig,
+	'fr.wikipedia.org': testWikiConfig,
+	'de.wikipedia.org': testWikiConfig,
+};
+
+export function fakeContext(overrides: Partial<ToolContext> = {}): ToolContext {
+	return {
+		mwn: throws('mwn()') as never,
+		wikis: {
+			getAll: () => testWikiRegistry as never,
+			// Own-key lookup only, mirroring WikiRegistryImpl.get — a bare
+			// bracket access would resolve inherited Object.prototype members.
+			get: ((key: string) =>
+				Object.hasOwn(testWikiRegistry, key) ? testWikiRegistry[key] : undefined) as never,
+			add: throws('wikis.add') as never,
+			remove: throws('wikis.remove') as never,
+			isManagementAllowed: () => true,
+		},
+		activeWiki: {
+			get: () => {
+				const key = getRequestWiki() ?? 'test-wiki';
+				return { key, config: testWikiConfig as never };
+			},
+			getDefaultKey: () => 'test-wiki',
+		},
+		uploadDirs: { list: () => [] },
+		wikiCache: { invalidate: throws('wikiCache.invalidate') as never },
+		siteInfoCache: (() => {
+			const cache = new SiteInfoCacheImpl();
+			for (const key of Object.keys(testWikiRegistry)) {
+				cache.set(key, { server: 'https://test.wiki', articlepath: '/wiki' });
+			}
+			return cache;
+		})(),
+		wikiProbe: {
+			hasExtension: throws('wikiProbe.hasExtension') as never,
+			// The dispatch() capability guard calls hasAnyExtension for
+			// extension-pack tools; default to "present" so plain tool tests aren't
+			// blocked. Tests that exercise the guard override this explicitly.
+			hasAnyExtension: (async () => true) as never,
+			// reconcile's wiki-gate rule inspects every wiki; default to a reachable
+			// wiki that advertises nothing, so a gated tool stays hidden unless a
+			// test says otherwise. Deliberately more restrictive than the
+			// hasAnyExtension default above: a test that exercises gating has to
+			// stub both, since the two answer from the same probe in production.
+			inspect: (async () => ({ reachable: true, extensions: new Set<string>() })) as never,
+			invalidate: throws('wikiProbe.invalidate') as never,
+		},
+		sections: {
+			list: throws('sections.list') as never,
+			listInSource: throws('sections.listInSource') as never,
+		},
+		edit: {
+			submit: throws('edit.submit') as never,
+			submitUpload: throws('edit.submitUpload') as never,
+			submitUploadFromBytes: throws('edit.submitUploadFromBytes') as never,
+			applyTags: (o) => ({ ...o }),
+			botRight: throws('edit.botRight') as never,
+		},
+		revision: new RevisionNormalizerImpl(),
+		format: new ResponseFormatterImpl(),
+		errors: new ErrorClassifierImpl(extensionErrorVocabulary(extensionPacks)),
+		logger: fakeLogger(),
+		transport: 'stdio' as const,
+		...overrides,
+	};
+}
+
+export function fakeManagementContext(
+	overrides: Partial<ManagementContext> = {},
+): ManagementContext {
+	return { ...fakeContext(overrides), reconcile: vi.fn(), ...overrides };
+}
+
+/** The same context, for a wiki that has turned edit attribution off. */
+export function withoutEditAttribution(ctx: ToolContext): ToolContext {
+	return {
+		...ctx,
+		activeWiki: {
+			...ctx.activeWiki,
+			get: () => {
+				const { key, config } = ctx.activeWiki.get();
+				return { key, config: { ...config, attributeEdits: false } };
+			},
+		},
+	};
+}
+
+// A ctx whose registry and activeWiki agree on one wiki — the dispatcher
+// resolves and validates it before applying the OAuth gate, so a ctx whose two
+// halves disagree passes only by accident.
+export function ctxForWiki(
+	config: Record<string, unknown>,
+	transport: ToolContext['transport'],
+): ToolContext {
+	const registry: Record<string, unknown> = { 'wiki-key': config };
+	return fakeContext({
+		transport,
+		wikis: {
+			getAll: () => registry as never,
+			get: ((key: string) => registry[key]) as never,
+			add: () => {},
+			remove: () => {},
+			isManagementAllowed: () => true,
+		},
+		activeWiki: {
+			get: () => ({ key: getRequestWiki() ?? 'wiki-key', config: config as never }),
+			getDefaultKey: () => 'wiki-key',
+		},
+	});
+}
