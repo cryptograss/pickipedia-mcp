@@ -1,0 +1,118 @@
+import { describe, it, expect } from 'vitest';
+import { WikiRegistryImpl, DuplicateWikiKeyError } from '../../src/wikis/wikiRegistry.ts';
+import type { WikiConfig } from '../../src/config/loadConfig.ts';
+
+const sample = (name: string): WikiConfig => ({
+	sitename: name,
+	server: `https://${name}`,
+	articlepath: '/wiki',
+	scriptpath: '/w',
+});
+
+describe('WikiRegistryImpl', () => {
+	it('getAll returns all configured wikis', () => {
+		const reg = new WikiRegistryImpl({ a: sample('a'), b: sample('b') }, true);
+		expect(Object.keys(reg.getAll())).toEqual(['a', 'b']);
+	});
+
+	it('get returns the wiki config for an existing key', () => {
+		const reg = new WikiRegistryImpl({ a: sample('a') }, true);
+		expect(reg.get('a')?.sitename).toBe('a');
+	});
+
+	it('get returns undefined for an unknown key', () => {
+		const reg = new WikiRegistryImpl({}, true);
+		expect(reg.get('nope')).toBeUndefined();
+	});
+
+	it('add inserts a new wiki', () => {
+		const reg = new WikiRegistryImpl({}, true);
+		reg.add('a', sample('a'));
+		expect(reg.get('a')?.sitename).toBe('a');
+	});
+
+	it('add rejects duplicate keys with DuplicateWikiKeyError', () => {
+		const reg = new WikiRegistryImpl({ a: sample('a') }, true);
+		expect(() => reg.add('a', sample('a'))).toThrow(DuplicateWikiKeyError);
+	});
+
+	it('add rejects empty keys', () => {
+		const reg = new WikiRegistryImpl({}, true);
+		expect(() => reg.add('', sample('x'))).toThrow(/empty/i);
+	});
+
+	it('add rejects whitespace-only keys', () => {
+		const reg = new WikiRegistryImpl({}, true);
+		expect(() => reg.add('   ', sample('x'))).toThrow(/empty/i);
+	});
+
+	// Percent-encoding carries these through, so they are accepted where they
+	// previously were not.
+	it.each(['a/b', 'a?b', 'a#b', 'my wiki', 'a,b'])('add accepts the key %j', (key) => {
+		const reg = new WikiRegistryImpl({}, true);
+		reg.add(key, sample('x'));
+		expect(reg.get(key)).toBeDefined();
+	});
+
+	// The `wiki` tool argument tells a bare key from a resource URI by prefix, so
+	// such a key would be stripped to the wrong segment.
+	it('add rejects a key that begins with the resource URI prefix', () => {
+		const reg = new WikiRegistryImpl({}, true);
+		expect(() => reg.add('mcp://wikis/x', sample('x'))).toThrow(/cannot start with/);
+		expect(reg.get('mcp://wikis/x')).toBeUndefined();
+	});
+
+	// An unpaired surrogate makes encodeURIComponent throw, which would fail the
+	// whole resource listing rather than this one key.
+	it('add rejects a key containing an unpaired surrogate', () => {
+		const reg = new WikiRegistryImpl({}, true);
+		expect(() => reg.add('a\ud800b', sample('x'))).toThrow(/not valid Unicode/);
+	});
+
+	it('add accepts a host:port key', () => {
+		const reg = new WikiRegistryImpl({}, true);
+		reg.add('localhost:8080', sample('local'));
+		expect(reg.get('localhost:8080')?.sitename).toBe('local');
+	});
+
+	it('remove drops the key', () => {
+		const reg = new WikiRegistryImpl({ a: sample('a') }, true);
+		reg.remove('a');
+		expect(reg.get('a')).toBeUndefined();
+	});
+
+	it('isManagementAllowed reflects the constructor flag', () => {
+		expect(new WikiRegistryImpl({}, true).isManagementAllowed()).toBe(true);
+		expect(new WikiRegistryImpl({}, false).isManagementAllowed()).toBe(false);
+	});
+
+	it('mutates the underlying map in place so external readers see updates', () => {
+		const wikis: Record<string, WikiConfig> = { a: sample('a') };
+		const reg = new WikiRegistryImpl(wikis, true);
+		reg.add('b', sample('b'));
+		expect(wikis.b?.sitename).toBe('b');
+		reg.remove('a');
+		expect(wikis.a).toBeUndefined();
+	});
+
+	it('get returns undefined for prototype-chain keys', () => {
+		const reg = new WikiRegistryImpl({ a: sample('a') }, true);
+		expect(reg.get('constructor')).toBeUndefined();
+		expect(reg.get('__proto__')).toBeUndefined();
+		expect(reg.get('toString')).toBeUndefined();
+		expect(reg.get('hasOwnProperty')).toBeUndefined();
+		expect(reg.get('valueOf')).toBeUndefined();
+	});
+
+	it('get still returns the config for a real configured key', () => {
+		const reg = new WikiRegistryImpl({ a: sample('a') }, true);
+		expect(reg.get('a')?.sitename).toBe('a');
+	});
+
+	it('add rejects dangerous prototype-chain keys', () => {
+		const reg = new WikiRegistryImpl({}, true);
+		expect(() => reg.add('__proto__', sample('x'))).toThrow(/not allowed/i);
+		expect(() => reg.add('constructor', sample('x'))).toThrow(/not allowed/i);
+		expect(() => reg.add('prototype', sample('x'))).toThrow(/not allowed/i);
+	});
+});

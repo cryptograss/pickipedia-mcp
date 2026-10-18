@@ -1,51 +1,56 @@
-/* eslint-disable n/no-missing-import */
-import type { McpServer, RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
-/* eslint-enable n/no-missing-import */
+import type { McpServer, RegisteredTool } from '@modelcontextprotocol/server';
+import { errorMessage } from '../errors/isErrnoException.ts';
+import { logger } from '../runtime/logger.ts';
+import type { Tool } from '../runtime/tool.ts';
+import type { ToolContext, ManagementContext } from '../runtime/context.ts';
+import type { Reconcile } from '../runtime/reconcile.ts';
+import { dispatch } from '../runtime/dispatcher.ts';
+import { register } from '../runtime/register.ts';
 
-import { getPageTool } from './get-page.js';
-import { getPageHistoryTool } from './get-page-history.js';
-import { searchPageTool } from './search-page.js';
-import { setWikiTool } from './set-wiki.js';
-import { addWikiTool } from './add-wiki.js';
-import { removeWikiTool } from './remove-wiki.js';
-import { updatePageTool } from './update-page.js';
-import { getFileTool } from './get-file.js';
-import { createPageTool } from './create-page.js';
-import { uploadFileTool } from './upload-file.js';
-import { uploadFileFromUrlTool } from './upload-file-from-url.js';
-import { deletePageTool } from './delete-page.js';
-import { getRevisionTool } from './get-revision.js';
-import { undeletePageTool } from './undelete-page.js';
-import { getCategoryMembersTool } from './get-category-members.js';
-import { searchPageByPrefixTool } from './search-page-by-prefix.js';
+import { extensionPacks } from './extensions/index.ts';
+import { standardTools } from './standardTools.ts';
+import { addWiki } from './add-wiki.ts';
+import { removeWiki } from './remove-wiki.ts';
 
-const toolRegistrars = [
-	getPageTool,
-	getPageHistoryTool,
-	searchPageTool,
-	setWikiTool,
-	addWikiTool,
-	removeWikiTool,
-	updatePageTool,
-	getFileTool,
-	createPageTool,
-	uploadFileTool,
-	uploadFileFromUrlTool,
-	deletePageTool,
-	getRevisionTool,
-	undeletePageTool,
-	getCategoryMembersTool,
-	searchPageByPrefixTool
-];
+// oxlint-disable-next-line typescript/no-explicit-any
+const managementTools: Tool<any, ManagementContext>[] = [addWiki, removeWiki];
 
-export function registerAllTools( server: McpServer ): RegisteredTool[] {
-	const registeredTools: RegisteredTool[] = [];
-	for ( const registrar of toolRegistrars ) {
+export function registerAllTools(
+	server: McpServer,
+	reconcile: Reconcile,
+	ctx: ToolContext,
+): Map<string, RegisteredTool> {
+	const registered = new Map<string, RegisteredTool>();
+
+	for (const tool of standardTools) {
 		try {
-			registeredTools.push( registrar( server ) );
-		} catch ( error ) {
-			console.error( `Error registering tool: ${ ( error as Error ).message }` );
+			registered.set(tool.name, register(server, tool, dispatch(tool, ctx)));
+		} catch (error) {
+			logger.error('Error registering tool', { error: errorMessage(error) });
 		}
 	}
-	return registeredTools;
+
+	const mgmtCtx: ManagementContext = { ...ctx, reconcile };
+	for (const tool of managementTools) {
+		try {
+			registered.set(tool.name, register(server, tool, dispatch(tool, mgmtCtx)));
+		} catch (error) {
+			logger.error('Error registering tool', { error: errorMessage(error) });
+		}
+	}
+
+	// Extension-gated tools start disabled. They're enabled by reconcile() once
+	// the extension detector confirms the relevant extension is installed on
+	// the active wiki. This avoids a race where tools/list arrives before the
+	// initial reconcile completes.
+	for (const pack of extensionPacks) {
+		for (const tool of pack.tools) {
+			const reg = registered.get(tool.name);
+			if (reg && reg.enabled) {
+				reg.disable();
+			}
+		}
+	}
+
+	return registered;
 }

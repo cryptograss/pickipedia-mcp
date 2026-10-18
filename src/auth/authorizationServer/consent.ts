@@ -1,0 +1,142 @@
+import type { ProxyConfig } from './proxyConfig.ts';
+import { signConsent } from './jwt.ts';
+import { isLoopbackHost } from './redirectPolicy.ts';
+import { esc, renderPage } from '../pageShell.ts';
+
+const COOKIE = 'mcp_consent';
+const CSRF_COOKIE = 'mcp_consent_csrf';
+// Long enough for a human to read the consent page, short enough to bound the
+// window in which the anti-CSRF nonce is valid.
+const CSRF_TTL_SECONDS = 10 * 60;
+
+export function renderConsentPage(a: {
+	clientName: string;
+	wiki: string;
+	authorizeQuery: string;
+	csrfToken: string;
+	redirectHost: string;
+}): string {
+	// The proxy always requests the consumer's full grants (see authorize.ts), and
+	// MediaWiki itemises them on the first authorization only — it remembers the
+	// grant afterwards, which is why per-client consent lives here.
+	const onThisDevice = a.redirectHost === '' || isLoopbackHost(a.redirectHost);
+	// An unregistered redirect_uri is refused before consent renders, so an absent
+	// host is unreachable; it degrades rather than printing "to  on this device".
+	const host = a.redirectHost === '' ? '' : `<strong>${esc(a.redirectHost)}</strong>`;
+	const returnTo = onThisDevice
+		? host === ''
+			? `You'll be returned to an address on this device.`
+			: `You'll be returned to ${host} on this device.`
+		: `You'll be returned to ${host}.`;
+	// Any local process can bind a loopback address, so the host cannot say which
+	// program will receive the grant; whether the reader started this sign-in is the
+	// only check available to them.
+	const timing = onThisDevice ? `Allow only if you started this sign-in a moment ago. ` : '';
+	const ask = `<p class="pg-note-strong">${timing}${returnTo}</p>`;
+	const body =
+		ask +
+		`<form method="POST" action="/mcp/consent?${esc(a.authorizeQuery)}" class="pg-actions">` +
+		`<input type="hidden" name="csrf" value="${esc(a.csrfToken)}">` +
+		// Deny first in source order so the progressive action lands on the right per
+		// Codex, and so a flex row mirrors it with the writing direction under RTL.
+		`<button class="pg-btn pg-neutral" name="decision" value="deny" type="submit">Deny</button>` +
+		`<button class="pg-btn pg-primary" name="decision" value="approve" type="submit">Allow</button>` +
+		`</form>`;
+	return renderPage({
+		title: 'Authorize application',
+		heading: `Allow ${a.clientName} to use your ${a.wiki} account?`,
+		icon: { name: 'lock' },
+		body,
+	});
+}
+
+// Shown when the user denies and there is no trusted client redirect to bounce to.
+export function renderCancelledPage(a: { clientName?: string }): string {
+	const who = a.clientName ? `<strong>${esc(a.clientName)}</strong>` : 'the application';
+	const body =
+		`<p class="pg-lead">You declined to authorize ${who}. Nothing was shared with it.</p>` +
+		`<p class="pg-note">You can close this window.</p>`;
+	return renderPage({
+		title: 'Authorization cancelled',
+		icon: { name: 'cancel', accent: 'subtle' },
+		body,
+	});
+}
+
+// Shown on a terminal authorization error reached in the browser (e.g. a failed
+// upstream exchange, a bad /authorize request, or a consent failure). `reason` is
+// the already-sanitized error_description.
+export function renderAuthErrorPage(a: { reason: string }): string {
+	const body =
+		`<p class="pg-lead">Something went wrong while authorizing the application. You can close this window and try connecting again.</p>` +
+		`<p class="pg-mono">${esc(a.reason)}</p>`;
+	return renderPage({
+		title: 'Authorization failed',
+		icon: { name: 'error', accent: 'error' },
+		body,
+	});
+}
+
+// Anti-CSRF nonce for the consent decision. SameSite=Strict so a cross-site POST
+// cannot carry it, HttpOnly so script cannot read it: the form must echo this
+// value (double-submit) for an approval to be honoured.
+export function buildCsrfCookie(token: string): string {
+	return `${CSRF_COOKIE}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/mcp; Max-Age=${CSRF_TTL_SECONDS}`;
+}
+
+export function readCsrfCookie(cookieHeader: string | undefined): string | undefined {
+	return readCookie(cookieHeader, CSRF_COOKIE);
+}
+
+const TXN_COOKIE = 'mcp_txn';
+// Matches the transaction TTL (proxyStore TXN_TTL_MS); the cookie is only a
+// fallback for recovering the txn id on the callback.
+const TXN_COOKIE_TTL_SECONDS = 15 * 60;
+
+// Scoped to the callback path only — the single endpoint that consumes it — to
+// minimise its blast radius.
+const TXN_COOKIE_PATH = '/mcp/oauth/callback';
+
+// Carries the proxy transaction id across the upstream-wiki round-trip. MediaWiki's
+// Extension:OAuth drops the `state` parameter on a denial (and uses a non-standard
+// error code), so the callback cannot otherwise map a denial back to its client.
+// SameSite=Lax so it survives the top-level GET navigation back from the wiki.
+export function buildTxnCookie(txnId: string): string {
+	return `${TXN_COOKIE}=${txnId}; HttpOnly; Secure; SameSite=Lax; Path=${TXN_COOKIE_PATH}; Max-Age=${TXN_COOKIE_TTL_SECONDS}`;
+}
+
+// Expires the txn cookie after the callback consumes it, so it can't linger and be
+// matched to an unrelated later flow.
+export function clearTxnCookie(): string {
+	return `${TXN_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=${TXN_COOKIE_PATH}; Max-Age=0`;
+}
+
+export function readTxnCookie(cookieHeader: string | undefined): string | undefined {
+	return readCookie(cookieHeader, TXN_COOKIE);
+}
+
+export async function buildConsentCookie(
+	pc: ProxyConfig,
+	b: { clientId: string; redirectHost: string; wiki: string },
+): Promise<string> {
+	const value = await signConsent({ ...b, ttlMs: pc.consentTtlMs, signingKey: pc.signingKey });
+	const maxAge = Math.floor(pc.consentTtlMs / 1000);
+	return `${COOKIE}=${value}; HttpOnly; Secure; SameSite=Lax; Path=/mcp; Max-Age=${maxAge}`;
+}
+
+export function readConsentCookie(cookieHeader: string | undefined): string | undefined {
+	return readCookie(cookieHeader, COOKIE);
+}
+
+function readCookie(cookieHeader: string | undefined, name: string): string | undefined {
+	if (!cookieHeader) {
+		return undefined;
+	}
+	for (const part of cookieHeader.split(';')) {
+		const [k, ...v] = part.trim().split('=');
+		if (k === name) {
+			return v.join('=');
+		}
+	}
+	return undefined;
+}
