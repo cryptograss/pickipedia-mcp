@@ -1,19 +1,15 @@
-/**
- * PickiPedia's bot-edit verification, on the client side.
- *
- * The wiki's PickiPediaVerification extension refuses a bot's edit to an
- * article when a line it adds or changes carries no proposal marker
- * ({{Bot_proposes|...}}, or <proposed>...</proposed> around a template call).
- * This marks them, so an agent writes plain wikitext and never a marker by
- * hand: new and changed prose is wrapped, what the page already had is put
- * back as it was. A person verifies the proposals at Special:VerifyBotEdits.
- *
- * Every write reaches the wiki through EditServiceImpl.submit (update-page in
- * all its operations) or mwn.create (create-page), and each calls in here:
- * markEditParams() and markNewPage() below. What is left of this file is the
- * wrapping itself, unchanged from before upstream v0.19.0.
- */
-import type { Mwn } from 'mwn';
+/* eslint-disable n/no-missing-import */
+import type { CallToolResult, TextContent } from '@modelcontextprotocol/sdk/types.js';
+import type { Middleware, EditContext } from './types.js';
+// Imported lazily inside fetchRevisionSource(). Statically, this module sits in
+// a cycle — verification -> common/utils -> server -> middleware/index ->
+// verification — which only initialises correctly when the app's own entry
+// point happens to load first. Deferring it breaks the cycle and lets this
+// module be imported on its own, which the wrapper tests rely on.
+import type { makeRestGetRequest as MakeRestGetRequest } from '../common/utils.js';
+// Leaf module, no imports of its own, so this one is safe to take statically.
+import { ContentFormat, getSubEndpoint } from '../common/mwRestApiContentFormat.js';
+import type { MwRestApiRevisionObject } from '../types/mwRestApi.js';
 
 /**
  * Namespaces exempt from verification.
@@ -28,11 +24,6 @@ const EXEMPT_NAMESPACES = [
 	'Module',
 	'Form',
 	'PickiPedia', // Bot config and meta pages
-	// The agents' own notes, and the docs they read for their work: only the
-	// owning agent and sysops can edit a page there (the wiki's agent-edit right
-	// and PickiPediaContent's AgentPages), and what an agent keeps for itself is
-	// not a claim waiting to be verified.
-	'Agent',
 ];
 
 /**
@@ -45,6 +36,44 @@ const EXEMPT_NAMESPACES = [
  * chores; the people who use the list asked for it to be exempt.
  */
 const EXEMPT_PAGES = [/^Cryptograss:Moods\/[^/]+\/todo$/i];
+
+/**
+ * Fetch the source content of a revision.
+ *
+ * The endpoint comes from getSubEndpoint() rather than a literal, because the
+ * literal is what went wrong: this asked for `/v1/revision/{id}/bare`, which
+ * getSubEndpoint maps to ContentFormat.none — metadata, no `source` at all. So
+ * every call yielded null, the caller read that as "no previous revision
+ * available", and fell back to wrapping the whole page. That is precisely the
+ * bug reported in pickipedia#43: an edit adding one template marked every
+ * pre-existing paragraph unverified.
+ *
+ * @param {number} revisionId Revision to fetch.
+ * @return {Promise<string|null>} Wikitext, or null if it could not be fetched.
+ */
+async function fetchRevisionSource(revisionId: number): Promise<string | null> {
+	try {
+		const { makeRestGetRequest } = (await import('../common/utils.js')) as {
+			makeRestGetRequest: typeof MakeRestGetRequest;
+		};
+		const data = await makeRestGetRequest<MwRestApiRevisionObject>(
+			`/v1/revision/${revisionId}${getSubEndpoint(ContentFormat.source)}`,
+		);
+		if (typeof data.source !== 'string') {
+			// Don't let this fail quietly again. A diff we can't compute is a
+			// page we're about to re-wrap wholesale.
+			console.error(
+				`[verification] Revision ${revisionId} came back without source; ` +
+					`keys: ${Object.keys(data).join(', ')}`,
+			);
+			return null;
+		}
+		return data.source;
+	} catch (error) {
+		console.error(`[verification] Failed to fetch revision ${revisionId}: ${error}`);
+		return null;
+	}
+}
 
 /**
  * Strip a proposal marker to get back the content underneath.
@@ -119,12 +148,12 @@ function isAlreadyProposed(content: string): boolean {
  * @param {string} content Inline content to mark.
  * @return {string} The content, marked.
  */
-function markInlineContent(content: string, by: string): string {
+function markInlineContent(content: string): string {
 	if (content.includes('{{')) {
-		return `<proposed by="${by}">${content}</proposed>`;
+		return `<proposed by="Magent">${content}</proposed>`;
 	}
 	const escaped = content.replace(/\|/g, '{{!}}');
-	return `{{Bot_proposes|${escaped}|by=${by}}}`;
+	return `{{Bot_proposes|${escaped}|by=Magent}}`;
 }
 
 /**
@@ -521,11 +550,7 @@ function isListItem(line: string): boolean {
  *   anything found here is left alone.
  * @return {string} The line, wrapped if its content is new.
  */
-function wrapListItemContent(
-	line: string,
-	by: string,
-	existingLines?: Map<string, string>,
-): string {
+function wrapListItemContent(line: string, existingLines?: Map<string, string>): string {
 	const trimmed = line.trim();
 
 	// Find the list prefix (may be multiple chars like ** or **)
@@ -556,7 +581,7 @@ function wrapListItemContent(
 		return `${prefix} ${asStored}`;
 	}
 
-	return `${prefix} ${markInlineContent(content, by)}`;
+	return `${prefix} ${markInlineContent(content)}`;
 }
 
 /**
@@ -572,7 +597,7 @@ function wrapListItemContent(
  * @param {string[]} blockLines The template call, as its own lines.
  * @return {string[]} The call, marked.
  */
-function markMarkupBlock(blockLines: string[], by: string): string[] {
+function markMarkupBlock(blockLines: string[]): string[] {
 	const text = blockLines.join('\n');
 
 	// Templates that render their own proposed state do it better than a
@@ -586,7 +611,7 @@ function markMarkupBlock(blockLines: string[], by: string): string[] {
 		return injectTemplateStatus(text, template).split('\n');
 	}
 
-	return [`<proposed by="${by}">`, ...blockLines, '</proposed>'];
+	return ['<proposed by="Magent">', ...blockLines, '</proposed>'];
 }
 
 /**
@@ -664,7 +689,6 @@ export function wrapProseWithBotProposes(
 	source: string,
 	existingLines?: Map<string, string>,
 	existingBlocks?: Map<string, string[]>,
-	by = 'Magent',
 ): string {
 	const lines = source.split('\n');
 	const protectedLines = computeProtectedLines(lines);
@@ -690,7 +714,7 @@ export function wrapProseWithBotProposes(
 					result.push(asStored);
 				} else {
 					// New content - mark it
-					result.push(markInlineContent(text, by));
+					result.push(markInlineContent(text));
 				}
 			} else if (text) {
 				result.push(text);
@@ -721,7 +745,7 @@ export function wrapProseWithBotProposes(
 			const key = normalizeLine(block.join(' '));
 			const asStored = existingBlocks?.get(key);
 			if (asStored === undefined && isMarkableMarkup(block)) {
-				result.push(...markMarkupBlock(block, by));
+				result.push(...markMarkupBlock(block));
 			} else {
 				// A block already on the page goes back as the page had it.
 				// Pushing the incoming block instead drops its <proposed>
@@ -735,7 +759,7 @@ export function wrapProseWithBotProposes(
 		} else if (isListItem(line)) {
 			// List items - wrap the content after the prefix
 			flushParagraph();
-			result.push(wrapListItemContent(line, by, existingLines));
+			result.push(wrapListItemContent(line, existingLines));
 		} else {
 			// It's prose - accumulate into current paragraph
 			currentParagraph.push(line);
@@ -805,7 +829,6 @@ function applyVerification(
 	source: string,
 	existingLines?: Map<string, string>,
 	existingBlocks?: Map<string, string[]>,
-	by = 'Magent',
 ): string {
 	const template = getTemplateWithStatus(source);
 
@@ -826,12 +849,7 @@ function applyVerification(
 
 			// Wrap any prose after the template
 			if (afterTemplate.trim()) {
-				const wrappedAfter = wrapProseWithBotProposes(
-					afterTemplate,
-					existingLines,
-					existingBlocks,
-					by,
-				);
+				const wrappedAfter = wrapProseWithBotProposes(afterTemplate, existingLines, existingBlocks);
 				modified = beforeTemplate + templateContent + wrappedAfter;
 			}
 		}
@@ -840,182 +858,82 @@ function applyVerification(
 	}
 
 	// No recognized template - mark new prose and new template calls
-	return wrapProseWithBotProposes(source, existingLines, existingBlocks, by);
+	return wrapProseWithBotProposes(source, existingLines, existingBlocks);
 }
-
-/** What a marked write says, beside the tool's result. */
-export const PROPOSED_NOTE =
-	'This edit was marked as proposed where it adds or changes prose, as the wiki requires of bot edits; a person verifies it at Special:VerifyBotEdits.';
 
 /**
- * Mark the new and changed prose of `source`, as against `previous` (the
- * text it replaces, or nothing for a page or a passage that is all new).
+ * Verification middleware.
  *
- * @param {string} source Wikitext about to be saved.
- * @param {string|null} [previous] What it replaces.
- * @return {string} The wikitext with its proposals marked.
- */
-export function markSource(source: string, previous?: string | null, by = 'Magent'): string {
-	if (previous === undefined || previous === null) {
-		return applyVerification(source, undefined, undefined, by);
-	}
-	return applyVerification(source, buildLineSet(previous), buildBlockSet(previous), by);
-}
-
-const proposers = new WeakMap<Mwn, Promise<string>>();
-
-/**
- * Who a marker names as proposing the edit: the account signed in. Each agent
- * edits as its own bot (Magent@magent, Re@re), so a bot-password login's name
- * before the @ is the user; otherwise (an OAuth token) the wiki is asked once
- * per client. Never a name that could break out of the marker.
+ * Automatically injects status=proposed or {{Bot_proposes}} for all edits,
+ * ensuring bot content goes through the verification workflow.
  *
- * @param {Mwn} mwn Signed-in client.
- * @return {Promise<string>} The proposer's user name.
+ * Exempt namespaces (Template, Talk, User, MediaWiki, Special, *_talk)
+ * and exempt pages (a Mood's to-do list) are not modified.
  */
-export function proposerName(mwn: Mwn): Promise<string> {
-	let pending = proposers.get(mwn);
-	if (!pending) {
-		pending = findProposer(mwn);
-		proposers.set(mwn, pending);
-	}
-	return pending;
-}
+export const verificationMiddleware: Middleware = {
+	name: 'verification',
 
-async function findProposer(mwn: Mwn): Promise<string> {
-	const clean = (name: string): string => name.replace(/[|{}<>"=[\]\n]/g, '').trim();
-	const login = (mwn as { options?: { username?: string } }).options?.username;
-	if (typeof login === 'string' && login.trim() !== '') {
-		return clean(login.split('@')[0]) || 'an unnamed bot';
-	}
-	try {
-		// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- mwn API response shape; trusted at this boundary
-		const response = (await mwn.request({
-			action: 'query',
-			meta: 'userinfo',
-			formatversion: '2',
-		})) as { query?: { userinfo?: { name?: string; anon?: boolean } } } | undefined;
-		const info = response?.query?.userinfo;
-		if (info?.name && !info.anon) {
-			return clean(info.name) || 'an unnamed bot';
+	async onInput(context: EditContext): Promise<EditContext> {
+		// Check if this page (or its namespace) is exempt from verification
+		if (isExemptPage(context.title)) {
+			console.error(`[verification] ${context.title}: exempt, skipping`);
+			return context;
 		}
-	} catch (error) {
-		console.error(`[verification] could not tell who is signed in: ${String(error)}`);
-	}
-	return 'an unnamed bot';
-}
 
-/**
- * A new page's source, marked: every line of it is new.
- *
- * @param {Mwn} mwn Signed-in client, for who is proposing it.
- * @param {string} title The page.
- * @param {string} source Its wikitext.
- * @return {Promise<string>} The wikitext to create it with.
- */
-export async function markNewPage(mwn: Mwn, title: string, source: string): Promise<string> {
-	if (isExemptPage(title)) {
-		return source;
-	}
-	const marked = markSource(source, null, await proposerName(mwn));
-	console.error(
-		`[verification] ${title}: ${marked === source ? 'nothing to mark' : 'new prose marked as proposed'}`,
-	);
-	return marked;
-}
+		// For updates, fetch the previous revision to do diff-based verification
+		let existingLines: Map<string, string> | undefined;
+		let existingBlocks: Map<string, string[]> | undefined;
+		if (context.tool === 'update-page' && context.latestId) {
+			const previousSource = await fetchRevisionSource(context.latestId);
+			if (previousSource) {
+				existingLines = buildLineSet(previousSource);
+				existingBlocks = buildBlockSet(previousSource);
+				console.error(
+					`[verification] ${context.title}: fetched ${existingLines.size} lines and ${existingBlocks.size} markup blocks from revision ${context.latestId} for diff comparison`,
+				);
+			} else {
+				console.error(
+					`[verification] ${context.title}: could not fetch previous revision, will wrap all content`,
+				);
+			}
+		}
 
-/**
- * The text a write replaces: the section it names, or the whole page, at
- * the revision it is based on, else the current one. Null if there is none
- * (a page not yet made) or it can't be read.
- *
- * @param {Mwn} mwn Signed-in client.
- * @param {string} title The page.
- * @param {unknown} section The edit's section parameter, if any.
- * @param {unknown} baserevid The revision the edit is based on, if any.
- * @return {Promise<string|null>}
- */
-async function previousText(
-	mwn: Mwn,
-	title: string,
-	section: unknown,
-	baserevid: unknown,
-): Promise<string | null> {
-	const params: Record<string, string | number | boolean> = {
-		action: 'query',
-		prop: 'revisions',
-		rvprop: 'content',
-		rvslots: 'main',
-		formatversion: '2',
-	};
-	if (typeof baserevid === 'number' || (typeof baserevid === 'string' && baserevid !== '')) {
-		params.revids = String(baserevid);
-	} else {
-		params.titles = title;
-	}
-	if (typeof section === 'number' || (typeof section === 'string' && section !== '')) {
-		params.rvsection = String(section);
-	}
-	try {
-		// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- mwn API response shape; trusted at this boundary
-		const response = (await mwn.request(params)) as {
-			query?: {
-				pages?: Array<{
-					missing?: boolean;
-					revisions?: Array<{ slots?: { main?: { content?: string } } }>;
-				}>;
-			};
+		// Apply verification to non-exempt content
+		const modifiedSource = applyVerification(context.source, existingLines, existingBlocks);
+
+		// Log what we did
+		if (modifiedSource !== context.source) {
+			const template = getTemplateWithStatus(context.source);
+			if (template) {
+				console.error(
+					`[verification] ${context.title}: injected status=proposed into ${template} template and wrapped new prose`,
+				);
+			} else {
+				console.error(`[verification] ${context.title}: wrapped new prose with Bot_proposes`);
+			}
+		} else {
+			console.error(`[verification] ${context.title}: no modification needed`);
+		}
+
+		return {
+			...context,
+			source: modifiedSource,
 		};
-		const page = response.query?.pages?.[0];
-		const content = page?.revisions?.[0]?.slots?.main?.content;
-		return typeof content === 'string' ? content : null;
-	} catch (error) {
-		console.error(
-			`[verification] ${title}: could not read the text this edit replaces: ${String(error)}`,
-		);
-		return null;
-	}
-}
+	},
 
-/**
- * Mark an action=edit request's new prose before it is sent. Anything else
- * (other actions, exempt pages) passes through as it came.
- *
- * - `appendtext` / `prependtext` are new in full: every line of them is marked.
- * - `text` replaces the page, or with `section` one section of it: it is
- *   compared with what it replaces, read at `baserevid` when the edit names
- *   one (so a section number means what it meant to the caller), else the
- *   current revision. Only what the old text didn't have is marked, so an
- *   edit that adds one line doesn't re-mark a page of verified prose
- *   (pickipedia#43). If that text can't be read, everything is marked.
- *
- * @param {Mwn} mwn Signed-in client.
- * @param {Record<string, unknown>} params The edit's API parameters.
- * @return {Promise<Record<string, unknown>>} Them, with the text marked.
- */
-export async function markEditParams(
-	mwn: Mwn,
-	params: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-	const title = params.title;
-	if (params.action !== 'edit' || typeof title !== 'string' || isExemptPage(title)) {
-		return params;
-	}
-	for (const field of ['appendtext', 'prependtext']) {
-		const delta = params[field];
-		if (typeof delta === 'string') {
-			console.error(`[verification] ${title}: ${field} marked as proposed`);
-			return { ...params, [field]: markSource(delta, null, await proposerName(mwn)) };
+	async onOutput(context: EditContext, result: CallToolResult): Promise<CallToolResult> {
+		// Only add verification note if this namespace is NOT exempt
+		// (exempt namespaces don't go through verification workflow)
+		if (!result.isError && result.content && !isExemptPage(context.title)) {
+			const note: TextContent = {
+				type: 'text',
+				text: '⚠️ This edit was automatically marked as "proposed" and requires human verification.',
+			};
+			return {
+				...result,
+				content: [...result.content, note],
+			};
 		}
-	}
-	if (typeof params.text === 'string') {
-		const previous = await previousText(mwn, title, params.section, params.baserevid);
-		console.error(
-			previous === null
-				? `[verification] ${title}: no previous text to compare; all prose marked`
-				: `[verification] ${title}: marked what the edit adds or changes`,
-		);
-		return { ...params, text: markSource(params.text, previous, await proposerName(mwn)) };
-	}
-	return params;
-}
+		return result;
+	},
+};
