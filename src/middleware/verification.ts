@@ -177,6 +177,14 @@ export function buildLineSet(source: string): Map<string, string> {
 		if (protectedLines[i] || isNonWrappableLine(line)) {
 			flushParagraph();
 			// Don't add markup lines to the set
+		} else if (MARKER_OPENS_LINE.test(line.trim())) {
+			// Segment exactly as wrapProseWithBotProposes() segments: a marker
+			// line is its own paragraph there, so it must be here too, or the
+			// keys the two halves build stop matching and unchanged content
+			// gets re-marked, which is pickipedia#43.
+			flushParagraph();
+			currentParagraph = [line];
+			flushParagraph();
 		} else if (isListItem(line)) {
 			flushParagraph();
 			// Add list item content
@@ -341,6 +349,8 @@ function findTemplateEnd(source: string, startIndex: number): number {
  * @param {string} line Line to judge, in isolation.
  * @return {boolean} True if the line is markup rather than prose.
  */
+const MARKER_OPENS_LINE = /^\{\{(Bot_proposes|verified|source)\s*\|/i;
+
 function isNonWrappableLine(line: string): boolean {
 	const trimmed = line.trim();
 
@@ -732,6 +742,22 @@ export function wrapProseWithBotProposes(
 				// until a human looks at it.
 				result.push(...(asStored ?? block));
 			}
+		} else if (MARKER_OPENS_LINE.test(line.trim())) {
+			// A line that opens with {{Bot_proposes|, {{verified| or {{source|
+			// is a paragraph on its own. isNonWrappableLine() deliberately
+			// buckets it as prose so a marked sentence still answers a lookup
+			// of its unmarked form -- but prose accumulates, so without this
+			// the marker line merges with whatever prose sits immediately
+			// above it. The join is then a line the page never held, and
+			// because isAlreadyVerified() matches it, the restore-as-stored
+			// path is skipped and the join goes out verbatim. The wiki's gate
+			// sees new unmarked content and refuses the edit, naming a line no
+			// bot wrote and none can fix: Cryptograss/Horseshoe Crab has a
+			// {{verified}} call directly under its second line, and every bot
+			// edit to it failed this way.
+			flushParagraph();
+			currentParagraph = [line];
+			flushParagraph();
 		} else if (isListItem(line)) {
 			// List items - wrap the content after the prefix
 			flushParagraph();

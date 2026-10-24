@@ -9,10 +9,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Mwn } from 'mwn';
 import {
+	buildBlockSet,
+	buildLineSet,
 	isExemptPage,
 	markEditParams,
 	markNewPage,
 	proposerName,
+	wrapProseWithBotProposes,
 } from '../../src/middleware/verification.ts';
 
 type Request = (params: Record<string, unknown>) => Promise<unknown>;
@@ -196,5 +199,49 @@ describe('exempt pages', () => {
 
 	it('not a main-namespace page about agents', () => {
 		expect(isExemptPage('Agents of cryptograss')).toBe(false);
+	});
+});
+
+describe('a marker line is its own paragraph', () => {
+	// The Cryptograss/Horseshoe Crab shape: a {{verified}} call sitting
+	// directly under a line of prose, with no blank line between them.
+	const page = [
+		'Horseshoe Crab is the sprint after [[Cryptograss/Horny Toad]].',
+		'',
+		"Days are [[Skyler Golden|Skyler]]'s to number. Short points only.",
+		'{{verified|by SkymanJenkins}}',
+		'',
+		'==Day 1==',
+	].join('\n');
+
+	it('does not merge it into the prose above it', () => {
+		const out = wrapProseWithBotProposes(page, buildLineSet(page), buildBlockSet(page));
+
+		expect(out).not.toContain('only. {{verified');
+		expect(out).toBe(page);
+	});
+
+	it('leaves an unrelated edit free of unmarked new lines', () => {
+		// What the wiki's gate checks: every non-empty line the middleware
+		// emits is either one the page already held, or carries a marker.
+		const edited = page + '\n\n<proposed by="Magent">\n* A new claim.\n</proposed>';
+		const out = wrapProseWithBotProposes(edited, buildLineSet(page), buildBlockSet(page));
+
+		const held = new Set(page.split('\n').map((line) => line.trim()));
+		let inProposed = false;
+		for (const line of out.split('\n')) {
+			const trimmed = line.trim();
+			if (/<proposed[\s>]/i.test(trimmed)) {
+				inProposed = true;
+			}
+			const marked = inProposed || /\{\{Bot_proposes/i.test(trimmed);
+			if (/<\/proposed\s*>/i.test(trimmed)) {
+				inProposed = false;
+			}
+			if (trimmed === '' || trimmed.startsWith('==') || marked) {
+				continue;
+			}
+			expect(held).toContain(trimmed);
+		}
 	});
 });
