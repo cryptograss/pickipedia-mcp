@@ -31,8 +31,10 @@ const EXEMPT_NAMESPACES = [
 	// The agents' own notes, and the docs they read for their work: only the
 	// owning agent and sysops can edit a page there (the wiki's agent-edit right
 	// and PickiPediaContent's AgentPages), and what an agent keeps for itself is
-	// not a claim waiting to be verified.
+	// not a claim waiting to be verified. Emergent is the same namespace under
+	// its new name (pickipedia#158): the journals live there now.
 	'Agent',
+	'Emergent',
 ];
 
 /**
