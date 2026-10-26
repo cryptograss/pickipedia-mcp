@@ -559,3 +559,11 @@ check(
 		isExemptPage('User talk:JMyles') &&
 		isExemptPage('Cryptograss talk:Moods'),
 );
+// An emergent's journal is its own notes, not claims: the Agent namespace
+// renamed to Emergent (pickipedia#158) stays exempt under both names.
+check(
+	'the Emergent namespace is exempt like Agent',
+	isExemptPage('Emergent:Blu/Journal/26274917') &&
+		isExemptPage('Agent:Magent/Journal/26273591') &&
+		!isExemptPage('Emergent Blu/Journal'),
+);
