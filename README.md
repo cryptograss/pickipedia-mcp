@@ -29,6 +29,7 @@ Every tool that operates on a wiki accepts an optional `wiki` argument naming th
 | `search-page` | Search wiki page titles and contents (full-text). Searches the wiki's content namespaces unless given other namespace IDs. |
 | `search-page-by-prefix` | Search page titles by prefix. |
 | `whoami` | Report the identity the current session is authenticated as on the targeted wiki — username, whether it is anonymous, and group memberships (optionally user rights). |
+| `set-my-pronouns` | Set the signed-in account's own pronouns (PickiPedia's Pronouns preference, and nothing else about the account): shown on its user page and beside its name in magenta. |
 
 #### Page writes
 

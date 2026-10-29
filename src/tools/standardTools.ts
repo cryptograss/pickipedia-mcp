@@ -17,6 +17,7 @@ import { getCategoryMembers } from './get-category-members.ts';
 import { getLinksHere } from './get-links-here.ts';
 import { listWikis } from './list-wikis.ts';
 import { whoami } from './whoami.ts';
+import { setMyPronouns } from './set-my-pronouns.ts';
 import { createPage } from './create-page.ts';
 import { updatePage } from './update-page.ts';
 import { movePage } from './move-page.ts';
@@ -56,6 +57,7 @@ export const standardTools: Tool<any>[] = [
 	getLinksHere,
 	listWikis,
 	whoami,
+	setMyPronouns,
 	createPage,
 	updatePage,
 	movePage,
