@@ -225,6 +225,7 @@ describe('WRITE_TOOL_NAMES', () => {
 				'delete-page',
 				'move-page',
 				'protect-page',
+				'set-my-pronouns',
 				'undelete-page',
 				'update-file',
 				'update-file-from-url',
