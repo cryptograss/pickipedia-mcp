@@ -1,0 +1,152 @@
+import { describe, it, expect } from 'vitest';
+import type { ErrorCategory } from '../../src/errors/classifyError.ts';
+import { classifyError } from '../../src/errors/classifyError.ts';
+import { errorResult } from '../../src/results/response.ts';
+import { createMockMwnError } from '../helpers/mock-mwn-error.ts';
+import { assertStructuredError } from '../helpers/structuredResult.ts';
+import { CredentialResolutionError } from '../../src/errors/credentialResolutionError.ts';
+import { WikiTimeoutError } from '../../src/errors/wikiTimeoutError.ts';
+
+describe('classifyError', () => {
+	it('classifies an expired call budget as an upstream failure with a stable code', () => {
+		expect(classifyError(new WikiTimeoutError(150_000, 'calling'))).toEqual({
+			category: 'upstream_failure',
+			code: 'request-timeout',
+		});
+	});
+
+	describe('maps MW .code to category', () => {
+		const cases: Array<[string, ErrorCategory]> = [
+			['missingtitle', 'not_found'],
+			['nosuchrevid', 'not_found'],
+			['nosuchsection', 'not_found'],
+			['nofile', 'not_found'],
+			['missingtitle-createonly', 'not_found'],
+			['permissiondenied', 'permission_denied'],
+			['protectedpage', 'permission_denied'],
+			['protectedtitle', 'permission_denied'],
+			['cascadeprotected', 'permission_denied'],
+			['cantcreate', 'permission_denied'],
+			['cantmove', 'permission_denied'],
+			['cantmove-anon', 'permission_denied'],
+			['readapidenied', 'permission_denied'],
+			['writeapidenied', 'permission_denied'],
+			['blocked', 'permission_denied'],
+			['abusefilter-disallowed', 'permission_denied'],
+			['abusefilter-warning', 'permission_denied'],
+			['protectednamespace', 'permission_denied'],
+			['protectednamespace-interface', 'permission_denied'],
+			['namespaceprotected', 'permission_denied'],
+			['protectedinterface', 'permission_denied'],
+			['invalidtitle', 'invalid_input'],
+			['invalidparammix', 'invalid_input'],
+			['badvalue', 'invalid_input'],
+			['baddatatype', 'invalid_input'],
+			['paramempty', 'invalid_input'],
+			['badtags', 'invalid_input'],
+			['selfmove', 'invalid_input'],
+			['immobilenamespace', 'invalid_input'],
+			['nonfilenamespace', 'invalid_input'],
+			['filetypemismatch', 'invalid_input'],
+			['toomanyvalues', 'invalid_input'],
+			['protect-invalidaction', 'invalid_input'],
+			['protect-invalidlevel', 'invalid_input'],
+			['invalidexpiry', 'invalid_input'],
+			['pastexpiry', 'invalid_input'],
+			['create-titleexists', 'invalid_input'],
+			['editconflict', 'conflict'],
+			['articleexists', 'conflict'],
+			['fileexists', 'conflict'],
+			['fileexists-no-change', 'conflict'],
+			['notloggedin', 'authentication'],
+			['badtoken', 'authentication'],
+			['mustbeloggedin', 'authentication'],
+			['assertuserfailed', 'authentication'],
+			['assertbotfailed', 'authentication'],
+			['mwoauth-invalid-authorization', 'authentication'],
+			['ratelimited', 'rate_limited'],
+			['readonly', 'upstream_failure'],
+		];
+
+		for (const [code, expectedCategory] of cases) {
+			it(`${code} → ${expectedCategory}`, () => {
+				const err = createMockMwnError(code);
+				expect(classifyError(err)).toEqual({
+					category: expectedCategory,
+					code,
+				});
+			});
+		}
+	});
+
+	it('maps internal_api_error_* codes to upstream_failure', () => {
+		const err = createMockMwnError('internal_api_error_DBQueryError');
+		expect(classifyError(err)).toEqual({
+			category: 'upstream_failure',
+			code: 'internal_api_error_DBQueryError',
+		});
+	});
+
+	it('leaves an extension code unclassified when no pack declares it', () => {
+		const err = createMockMwnError('no-such-entity');
+		expect(classifyError(err)).toEqual({ category: 'upstream_failure' });
+	});
+
+	it('falls back to upstream_failure for unknown codes', () => {
+		const err = createMockMwnError('somethingnew', 'A new kind of error');
+		expect(classifyError(err)).toEqual({ category: 'upstream_failure' });
+	});
+
+	it('regex fallback picks up codes embedded in message when .code is absent', () => {
+		const err = new Error('The API returned: missingtitle — page not present');
+		expect(classifyError(err)).toEqual({
+			category: 'not_found',
+			code: 'missingtitle',
+		});
+	});
+
+	it('prefers .code over message regex when both are present', () => {
+		const err = createMockMwnError('ratelimited', 'something about missingtitle in the message');
+		expect(classifyError(err)).toEqual({
+			category: 'rate_limited',
+			code: 'ratelimited',
+		});
+	});
+
+	it.each([
+		['null', null],
+		['undefined', undefined],
+		['string', 'oops'],
+		['plain object without code', {}],
+		['number', 42],
+	])('non-Error value (%s) → upstream_failure without code', (_label, value) => {
+		expect(classifyError(value)).toEqual({ category: 'upstream_failure' });
+	});
+
+	describe('CredentialResolutionError', () => {
+		it('classifies as authentication', () => {
+			const err = new CredentialResolutionError('Could not resolve the "token" credential');
+			expect(classifyError(err)).toEqual({ category: 'authentication' });
+		});
+	});
+});
+
+describe('errorResult', () => {
+	it('builds a structured envelope with isError', () => {
+		const result = errorResult('not_found', 'Page "Foo" not found');
+		const envelope = assertStructuredError(result, 'not_found');
+		expect(envelope.message).toBe('Page "Foo" not found');
+		expect(envelope.code).toBeUndefined();
+	});
+
+	it('preserves the full message in the envelope', () => {
+		const result = errorResult('upstream_failure', 'Failed to fetch: connection refused');
+		const envelope = assertStructuredError(result, 'upstream_failure');
+		expect(envelope.message).toBe('Failed to fetch: connection refused');
+	});
+
+	it('carries an optional MediaWiki error code', () => {
+		const result = errorResult('conflict', 'clash', 'editconflict');
+		assertStructuredError(result, 'conflict', 'editconflict');
+	});
+});

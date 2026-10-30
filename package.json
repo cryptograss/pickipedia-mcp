@@ -1,6 +1,6 @@
 {
 	"name": "@professional-wiki/mediawiki-mcp-server",
-	"version": "0.6.0",
+	"version": "0.19.0",
 	"description": "Model Context Protocol (MCP) server for MediaWiki",
 	"mcpName": "io.github.ProfessionalWiki/mediawiki-mcp-server",
 	"keywords": [
@@ -25,7 +25,8 @@
 	},
 	"type": "module",
 	"files": [
-		"dist"
+		"dist",
+		"server.json"
 	],
 	"main": "dist/index.js",
 	"bin": {
@@ -36,36 +37,61 @@
 		"url": "git+https://github.com/ProfessionalWiki/MediaWiki-MCP-Server.git"
 	},
 	"engines": {
-		"node": ">=18"
+		"node": ">=22.12.0"
 	},
 	"scripts": {
 		"start": "node dist/index.js",
 		"start:http": "MCP_TRANSPORT=http node dist/index.js",
-		"build": "tsc",
-		"test": "npm run build && node scripts/check-verification.mjs",
-		"lint": "eslint --cache src/**/*",
 		"dev": "tsc --watch",
+		"build": "tsc",
+		"fmt": "oxfmt src tests scripts",
+		"fmt:check": "oxfmt --check src tests scripts",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"lint": "oxlint --tsconfig=./tsconfig.lint.json",
+		"typecheck": "tsc -p tsconfig.lint.json --noEmit",
+		"validate:server-json": "node scripts/validate-server-json.cjs",
+		"check:mcp": "node scripts/mcp-checks.cjs",
+		"preflight": "npm ci && npm run lint && npm run typecheck && npm run fmt:check && npm run validate:server-json && npm run test && npm run build && npm run bundle -- --clean",
+		"prepare": "lefthook install",
 		"inspector": "concurrently --kill-others \"tsc --watch\" \"npx -y @modelcontextprotocol/inspector@latest node dist/index.js\"",
 		"inspector:http": "concurrently --kill-others \"tsc --watch\" \"npx -y @modelcontextprotocol/inspector@latest\" \"MCP_TRANSPORT=http node dist/index.js\"",
 		"mcpjam": "concurrently --kill-others \"tsc --watch\" \"npx -y @mcpjam/inspector@latest node $(pwd)/dist/index.js\"",
-		"version": "node scripts/sync-version.cjs && git add server.json mcpb/manifest.json Dockerfile"
+		"bundle": "npm run build && node scripts/bundle.cjs",
+		"sync-manifests": "node scripts/sync-manifests.cjs",
+		"preversion": "npm run preflight",
+		"version": "node scripts/sync-manifests.cjs && node scripts/promote-changelog.cjs && git add server.json mcpb/manifest.json .claude-plugin/marketplace.json plugins/mediawiki-mcp-server/.claude-plugin/plugin.json .agents/plugins/marketplace.json plugins/mediawiki-mcp-server/.codex-plugin/plugin.json CHANGELOG.md"
 	},
 	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.22.0",
+		"@modelcontextprotocol/express": "^2.0.0",
+		"@modelcontextprotocol/node": "^2.0.0",
+		"@modelcontextprotocol/server": "^2.0.0",
 		"express": "^5.1.0",
+		"ipaddr.js": "2.5.0",
+		"jose": "^6.2.3",
 		"mwn": "^3.0.1",
 		"node-fetch": "^3.3.2",
-		"types-mediawiki-api": "^2.0.0"
+		"open": "^11.0.0",
+		"prom-client": "^15.1.3",
+		"types-mediawiki-api": "^2.0.0",
+		"zod": "^4.4.3"
 	},
 	"devDependencies": {
+		"@anthropic-ai/mcpb": "^2.1.2",
+		"@mcpjam/cli": "^6.0.0",
+		"@modelcontextprotocol/client": "^2.0.0",
 		"@types/express": "^5.0.2",
-		"@types/node": "^25.0.2",
-		"@types/node-fetch": "^2.6.12",
-		"@typescript-eslint/eslint-plugin": "^8.19.0",
-		"@typescript-eslint/parser": "^8.19.0",
-		"concurrently": "^9.1.2",
-		"eslint": "^8.57.0",
-		"eslint-config-wikimedia": "^0.32.2",
-		"typescript": "^5.8.3"
+		"@types/node": "^26.6.5",
+		"@types/supertest": "^7.2.0",
+		"ajv": "^8.17.1",
+		"ajv-formats": "^3.0.1",
+		"concurrently": "^10.0.3",
+		"lefthook": "^2.1.6",
+		"oxfmt": "^0.68.0",
+		"oxlint": "^1.62.0",
+		"oxlint-tsgolint": "^7.0.2001",
+		"supertest": "^7.2.2",
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.0"
 	}
 }

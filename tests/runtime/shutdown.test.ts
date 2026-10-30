@@ -1,0 +1,267 @@
+import { type StderrWriteSpy } from '../helpers/stderrSpy.ts';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { resolveShutdownGrace, registerShutdownHandlers } from '../../src/runtime/shutdown.ts';
+
+describe('resolveShutdownGrace', () => {
+	let stderrSpy: StderrWriteSpy;
+
+	beforeEach(() => {
+		vi.stubEnv('MCP_LOG_LEVEL', 'debug');
+		stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+	});
+
+	afterEach(() => {
+		stderrSpy.mockRestore();
+		vi.unstubAllEnvs();
+	});
+
+	function warningLines(): string[] {
+		return stderrSpy.mock.calls
+			.map((c) => String(c[0]))
+			.filter((s) => s.includes('"level":"warning"'));
+	}
+
+	it('defaults to 10000 when unset', () => {
+		expect(resolveShutdownGrace({})).toBe(10_000);
+		expect(warningLines()).toHaveLength(0);
+	});
+
+	it('parses a valid integer string', () => {
+		expect(resolveShutdownGrace({ MCP_SHUTDOWN_GRACE_MS: '5000' })).toBe(5_000);
+		expect(warningLines()).toHaveLength(0);
+	});
+
+	it('accepts zero (immediate exit, no drain wait)', () => {
+		expect(resolveShutdownGrace({ MCP_SHUTDOWN_GRACE_MS: '0' })).toBe(0);
+		expect(warningLines()).toHaveLength(0);
+	});
+
+	it.each([['not-a-number'], ['-1'], ['1.5'], ['600001'], ['']])(
+		'falls back with a warning for %s',
+		(v) => {
+			expect(resolveShutdownGrace({ MCP_SHUTDOWN_GRACE_MS: v })).toBe(10_000);
+			const lines = warningLines();
+			expect(lines).toHaveLength(1);
+			// For non-empty values the raw string is preserved in the log line.
+			// For the empty-string case, we verify the variable name appears instead,
+			// because toContain('') is always true and provides no signal.
+			expect(lines[0]).toContain(v !== '' ? v : 'MCP_SHUTDOWN_GRACE_MS');
+		},
+	);
+});
+
+interface FakeProcess {
+	on: (signal: 'SIGTERM' | 'SIGINT', cb: () => void) => void;
+	exit: (code: number) => void;
+	signals: Map<string, () => void>;
+	exitCalls: number[];
+}
+
+function fakeProcess(): FakeProcess {
+	const signals = new Map<string, () => void>();
+	const exitCalls: number[] = [];
+	return {
+		signals,
+		exitCalls,
+		on: (s, cb) => {
+			signals.set(s, cb);
+		},
+		exit: (code) => {
+			exitCalls.push(code);
+		},
+	};
+}
+
+function captureEvents(spy: StderrWriteSpy, name: string): Record<string, unknown>[] {
+	return spy.mock.calls
+		.map((c) => String(c[0]))
+		.filter((s) => s.startsWith('{'))
+		.map((s) => JSON.parse(s.replace(/\n$/, '')) as Record<string, unknown>)
+		.filter((e) => e.event === name);
+}
+
+describe('registerShutdownHandlers (http)', () => {
+	let stderrSpy: StderrWriteSpy;
+
+	beforeEach(() => {
+		vi.stubEnv('MCP_LOG_LEVEL', 'debug');
+		stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+	});
+
+	afterEach(() => {
+		stderrSpy.mockRestore();
+		vi.unstubAllEnvs();
+	});
+
+	function setup(opts: { inFlight: number; graceMs?: number }) {
+		const proc = fakeProcess();
+
+		let httpClosed = false;
+		const httpServer = {
+			close: (cb?: () => void) => {
+				httpClosed = true;
+				if (cb) {
+					cb();
+				}
+			},
+			closeIdleConnections: () => {},
+		};
+
+		let count = opts.inFlight;
+		const inFlight = {
+			count: () => count,
+			drain: () => {
+				count = 0;
+			},
+		};
+
+		// Records the in-flight count observed at close time, so the ordering
+		// contract (drain BEFORE handler close) is assertable.
+		const handlerCloseCountAt: number[] = [];
+		const mcpHandler = {
+			close: async () => {
+				handlerCloseCountAt.push(count);
+			},
+		};
+
+		registerShutdownHandlers({
+			transport: 'http',
+			graceMs: opts.graceMs ?? 10_000,
+			// oxlint-disable-next-line typescript/no-explicit-any
+			httpServer: httpServer as any,
+			mcpHandler,
+			inFlight,
+			// oxlint-disable-next-line typescript/no-explicit-any
+			process: proc as any,
+			pollIntervalMs: 5,
+		});
+
+		return {
+			proc,
+			handlerCloseCountAt,
+			httpServer: { closed: () => httpClosed },
+			inFlight,
+		};
+	}
+
+	it('registers SIGTERM and SIGINT', () => {
+		const { proc } = setup({ inFlight: 0 });
+		expect(proc.signals.has('SIGTERM')).toBe(true);
+		expect(proc.signals.has('SIGINT')).toBe(true);
+	});
+
+	it('drains cleanly when in-flight reaches zero, then closes the MCP handler', async () => {
+		const { proc, httpServer, handlerCloseCountAt, inFlight } = setup({ inFlight: 2 });
+		proc.signals.get('SIGTERM')!();
+		await new Promise((r) => setImmediate(r));
+		inFlight.drain();
+		await new Promise((r) => setTimeout(r, 20));
+
+		expect(httpServer.closed()).toBe(true);
+		// The handler closed exactly once, AFTER the drain: had it run first, it
+		// would have observed the pre-drain in-flight count and aborted those
+		// exchanges mid-call.
+		expect(handlerCloseCountAt).toEqual([0]);
+		expect(proc.exitCalls).toEqual([0]);
+
+		const start = captureEvents(stderrSpy, 'shutdown');
+		const done = captureEvents(stderrSpy, 'shutdown_complete');
+		expect(start).toHaveLength(1);
+		expect(start[0]).toMatchObject({
+			signal: 'SIGTERM',
+			transport: 'http',
+			grace_ms: 10_000,
+			in_flight_at_signal: 2,
+		});
+		expect(done).toHaveLength(1);
+		expect(done[0]).toMatchObject({
+			in_flight_drained: 2,
+			grace_exceeded: false,
+		});
+		expect(Number.isInteger(done[0].duration_ms)).toBe(true);
+	});
+
+	it('measures the grace window monotonically, so a wall-clock jump cannot cut the drain short', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		try {
+			const { proc, handlerCloseCountAt, inFlight } = setup({ inFlight: 2, graceMs: 2_000 });
+			proc.signals.get('SIGTERM')!();
+			await new Promise((r) => setImmediate(r));
+			// An hour of wall clock inside the grace window. The in-flight requests
+			// have had milliseconds of it, and are owed the rest.
+			vi.setSystemTime(Date.now() + 3_600_000);
+			await new Promise((r) => setTimeout(r, 20));
+			inFlight.drain();
+			await new Promise((r) => setTimeout(r, 20));
+
+			expect(handlerCloseCountAt).toEqual([0]);
+			expect(proc.exitCalls).toEqual([0]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('exits 1 with grace_exceeded: true when in-flight is stuck', async () => {
+		const { proc } = setup({ inFlight: 3, graceMs: 30 });
+		proc.signals.get('SIGINT')!();
+		await new Promise((r) => setTimeout(r, 60));
+		expect(proc.exitCalls).toEqual([1]);
+		const done = captureEvents(stderrSpy, 'shutdown_complete');
+		expect(done[0]).toMatchObject({
+			grace_exceeded: true,
+			in_flight_drained: 0,
+		});
+	});
+
+	it('forces immediate exit on a second signal', async () => {
+		const { proc } = setup({ inFlight: 5, graceMs: 10_000 });
+		proc.signals.get('SIGTERM')!();
+		await new Promise((r) => setImmediate(r));
+		proc.signals.get('SIGTERM')!();
+		expect(proc.exitCalls[proc.exitCalls.length - 1]).toBe(1);
+	});
+});
+
+describe('registerShutdownHandlers (stdio)', () => {
+	let stderrSpy: StderrWriteSpy;
+
+	beforeEach(() => {
+		vi.stubEnv('MCP_LOG_LEVEL', 'debug');
+		stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+	});
+
+	afterEach(() => {
+		stderrSpy.mockRestore();
+		vi.unstubAllEnvs();
+	});
+
+	it('closes the stdio transport and exits 0', async () => {
+		const proc = fakeProcess();
+		let closed = false;
+		registerShutdownHandlers({
+			transport: 'stdio',
+			graceMs: 0,
+			stdioTransport: {
+				close: async () => {
+					closed = true;
+				},
+			},
+			// oxlint-disable-next-line typescript/no-explicit-any
+			process: proc as any,
+		});
+
+		proc.signals.get('SIGTERM')!();
+		await new Promise((r) => setImmediate(r));
+
+		expect(closed).toBe(true);
+		expect(proc.exitCalls).toEqual([0]);
+		const events = captureEvents(stderrSpy, 'shutdown');
+		const done = captureEvents(stderrSpy, 'shutdown_complete');
+		expect(events[0]).toMatchObject({
+			transport: 'stdio',
+			signal: 'SIGTERM',
+			grace_ms: 0,
+		});
+		expect(done[0]).toMatchObject({ transport: 'stdio', grace_exceeded: false });
+	});
+});

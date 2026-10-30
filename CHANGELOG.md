@@ -1,0 +1,403 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.19.0] - 2026-09-25
+
+### Added
+
+- `protect-page` tool that protects or unprotects a wiki page, setting edit, move, upload or create protection separately, with an optional expiry. It needs the `Protect and unprotect pages` grant.
+- `MCP_USER_AGENT` replaces the `User-Agent` header the server sends, so wiki operators can reach you rather than this project.
+
+### Fixed
+
+- The Docker health check now follows `PORT` instead of always probing port 8080.
+- Unauthenticated requests to Wikimedia wikis no longer fall under Wikimedia's lowest rate limit, which is shared across all of its wikis and made `list-wikis` report some of them unreachable when many were configured. The default `User-Agent` now includes a contact URL.
+- `search-page` now picks up a change to which namespaces a wiki counts as content without a server restart: the list is re-read once it is an hour old. The wiki's public address, license, content language and query service endpoint are re-read on the same schedule.
+
+## [0.18.0] - 2026-09-10
+
+### Breaking changes
+
+- `update-page` now refuses a call that replaces a page or section when the source would shorten a target too large for one read to return whole. Pass `removeUnreadContent: true` to do it deliberately, or use `operation='find-replace'` to change part of a page without resending it; appends, growth and any target inside the byte budget are unaffected.
+- `update-page` now requires `latestId` on a replace scoped to a section, so the wiki resolves the section number against the revision it was read from. The lead, appends and prepends are unaffected.
+- `update-page` now refuses `removeSubsections` unless the write is a section replace, the only case it means anything for.
+
+### Added
+
+- `update-page` takes an `operation` argument naming what the write does: `replace`, `append`, `prepend` or `find-replace`. Omitting it means `replace`; with `section` set, `append` writes at the end of that section and `prepend` immediately above its heading, which inserts a section before an existing one.
+- `update-page` can now rewrite one passage of a page without resending the rest: `operation='find-replace'` takes `find`, the existing wikitext to change, and `replaceWith`, what it becomes. `find` is matched in full and exactly; one that matches nothing, or more than one place, is refused without writing.
+- `search-page` accepts `namespaces` to name the namespace IDs to search, and each result now reports the namespace it came from. When the namespaces searched are not the ones asked for — the wiki refused an ID, or a namespace prefix in the query overrode them — the response says so.
+
+### Changed
+
+- The content byte cap is now one budget for the whole response rather than one per body, and its default rises from 50000 to 75000 bytes. `get-pages` returns whole pages until that budget is spent and names the ones left out for a follow-up call to fetch.
+- `get-revision` now applies the same content cap as every other read, to both wikitext and rendered HTML.
+- `get-page` now reports `latestRevisionId` on any read that returns wikitext, so a section replace no longer needs a separate `metadata=true` call to obtain it.
+- `search-page` now searches the namespaces a wiki counts as content, instead of the main namespace only. Pass `namespaces: [0]` for the previous behaviour.
+- `update-page`'s `mode` argument is deprecated in favour of `operation`, which spells the same choice. Calls sending `mode='append'` or `mode='prepend'` keep working; a call sending both is refused when they disagree.
+- The section list `get-page` reports now labels each section with the number that edits it, as `1 (History)` where it was `History`, and leaves out headings that arrive by transclusion, which no section number addresses. The same list appears in the truncation marker of both `get-page` and `get-pages`.
+
+### Fixed
+
+- A truncated body no longer ends mid-character: the cut falls on a character boundary, so what comes back is a byte-exact prefix and never exceeds the cap it reports against. This affects every capped read, including `get-page`, `get-pages`, `get-revision`, `compare-pages` and `parse-wikitext`.
+- A truncated read no longer offers a narrowing that returns the same bytes. A `section=N` read names that section's own subsections, and a read with nothing narrower left says so instead of repeating the call that had just truncated.
+- Passing more namespace IDs than the wiki accepts (50, unless the account holds `apihighlimits`) is now reported as invalid input rather than as an upstream failure. This affects `get-category-members`, `get-links-here` and `get-recent-changes`.
+- A tool call to a wiki that stops answering now fails after 150 seconds, and a first call that cannot connect or sign in after 30 seconds. A timed-out write reports that the change may or may not have been applied and asks you to check the wiki before retrying; neither limit is configurable.
+- `add-wiki` no longer hangs on a URL whose host accepts the connection and then goes quiet. It now gives up after 30 seconds and reports a timeout, instead of suggesting the URL may be wrong.
+- `add-wiki` now registers a wiki whose `$wgServer` is protocol-relative, such as `//example.org`, instead of producing an unusable entry.
+
+## [0.17.0] - 2026-08-13
+
+### Breaking changes
+
+- `update-page` no longer creates sections: `section='new'` and `sectionTitle` are removed. Add a section with `mode='append'` and a source that begins with the heading, as in `"\n\n== History ==\n\nBody."`. A call still sending `section='new'` is refused with a message naming the replacement.
+- `update-page` now refuses a `section=N` replace whose source would delete the subsections nested under that section, which MediaWiki replaces along with it. Include the subsections in `source` to keep them, or pass `removeSubsections: true` to remove them deliberately. Appends, full-page replaces, and sections with no subsections are unaffected.
+
+### Added
+
+- Five tools for wikis running [Wikibase](https://www.mediawiki.org/wiki/Extension:Wikibase_Repository): `wikibase-search-entities` finds items and properties by label or alias, `wikibase-get-entity` reads one entity's terms and statements, `wikibase-query` runs SPARQL against the wiki's query service, and `wikibase-edit-entity` and `wikibase-add-statement` write. Auto-detected from `siteinfo`: registered on wikis that are a Wikibase repository, with `wikibase-query` limited to a repository that also publishes a query service endpoint. Entities are returned as compact text with referenced IDs resolved to labels, never as raw entity JSON, and the statement list is capped at 50 properties and, unless the call names one property, 10 values per property.
+
+### Changed
+
+- An outbound fetch refused for resolving to a private or loopback address now names `MCP_TRUSTED_HOSTS` in the error — the setting that would allow it. This affects the siteinfo probe and wiki discovery. Only an operator can lift such a refusal, and the message reaches tool output as well as the log, so it now says so rather than leaving the remedy to the deployment guide.
+
+### Fixed
+
+- A host correcting its clock no longer changes what the server does with elapsed time: rate-limit allowances, the shutdown grace window, the readiness and extension-detection caches, and the window a sign-in has to finish. Measured against the wall clock, a backwards NTP step could refuse a caller that had barely touched its rate-limit allowance with a `Retry-After` of up to an hour, and a forwards step could end a graceful shutdown early, aborting the tool calls it was waiting for.
+- Following a redirect no longer holds a connection open for every hop it followed, no longer drops from `https` to `http` without saying so, and no longer treats a `300` or a `305` as an address to follow. This affects the siteinfo probe, wiki discovery and the `*-from-url` tools; a wiki whose published URL redirects to an `http` address is now reported rather than quietly used, and `upload-file-from-url` and `update-file-from-url` now refuse a source URL that redirects to `http` instead of fetching it.
+- `upload-file-from-url` and `update-file-from-url` no longer leak a connection when they refuse a source URL whose declared size is over `MCP_UPLOAD_MAX_BYTES`. Each refused call held one connection open for as long as the server ran.
+- `update-page` no longer advertises itself as idempotent: in `mode='append'` and `mode='prepend'` it never was, so a client replaying a call whose result never arrived, with no `latestId` to catch the conflict, adds the content a second time. A replace resends the same content rather than adding to it.
+- `delete-page` no longer sends an empty deletion reason when the wiki sets `attributeEdits: false` and the call gave no comment. MediaWiki recorded that empty reason verbatim, leaving a blank deletion log entry; with no reason sent at all it can autogenerate its own `content was: …` reason instead.
+- NeoWiki subject writes now carry the `(via <tool> on MediaWiki MCP Server)` edit-summary suffix, as every other write already did. A wiki that sets `attributeEdits: false` sees no change.
+
+## [0.16.0] - 2026-07-30
+
+### Security
+
+- A refresh token issued by the hosted OAuth sign-in can no longer be redeemed by a different client. A request presenting a `client_id` other than the one the token was issued to is refused with `invalid_grant` and has to sign in again. Requests that send no `client_id`, and tokens issued before this release, keep working.
+- The HTTP transport did not validate the `Origin` header on any bind other than loopback, leaving it open to DNS rebinding: an attacker who re-points a domain at a server the victim's browser can reach could call tools and read the results, without having to reach that server themselves. The Docker image binds to `0.0.0.0` by default, so this affected container deployments unless `MCP_ALLOWED_ORIGINS` or `MCP_ALLOWED_HOSTS` was set.
+
+### Breaking changes
+
+- The HTTP transport now rate limits `tools/call`: each caller signed in through hosted OAuth gets its own allowance (default 30 per second, burst 60), all callers forwarding their own wiki token share one allowance of that size between them, and anonymous callers share a third (default 100 per second). A request over the limit is refused with `429` and a `Retry-After` header. Raise `MCP_RATE_LIMIT` / `MCP_RATE_LIMIT_BURST` / `MCP_RATE_LIMIT_ANONYMOUS` if you run high-throughput automation, or set `MCP_RATE_LIMIT=0` to disable.
+- The HTTP transport no longer forwards a caller's `Authorization: Bearer` header to MediaWiki; such a request is refused with `401`. Use [hosted OAuth sign-in](docs/deployment.md#hosted-oauth-sign-in), or set `MCP_ALLOW_BEARER_PASSTHROUGH=true` to keep the old behaviour while you migrate. That option is deprecated and will be removed.
+- The server no longer advertises the wikis' own authorization servers, so a client can no longer discover where to mint a token to send here. `list-wikis` now reports a wiki's `authorizationServer` only while `MCP_ALLOW_BEARER_PASSTHROUGH=true`, and `/.well-known/oauth-protected-resource` answers `404` unless hosted OAuth sign-in is enabled. The document a hosted sign-in publishes there is unchanged.
+- The `Origin` header is now validated on every bind, and a request carrying an unlisted origin is refused with `403`. If you serve a browser-based client from a public bind, set `MCP_ALLOWED_ORIGINS` before upgrading. Clients that send no `Origin` header, which is most of them, are unaffected.
+
+### Added
+
+- Metrics: `/metrics` now reports `mcp_rate_limited_total`, a counter of `tools/call` requests refused with `429`, labelled by whether the caller was authenticated.
+
+### Removed
+
+- The server no longer sends log messages to connected MCP clients and no longer advertises the `logging` capability, following the feature's deprecation in the 2026-07-28 MCP revision. All logging goes to stderr, unchanged; `MCP_LOG_LEVEL` still controls it.
+
+### Changed
+
+- Cacheable results (tool and resource lists, wiki resource reads, discovery) now carry a 60-second freshness hint instead of `ttlMs: 0`, so clients on the 2026-07-28 revision can cache them between polls. Change notifications are unaffected.
+- The hosted OAuth sign-in's approval page is shorter and now names the address you will be returned to, including for a local application, where it previously said only "an application on this device". It no longer promises a permissions step the wiki does not always show.
+- The HTTP transport's own `401`, `503` and `413` replies carry new JSON-RPC error codes: `-31001`, `-31002` and `-31003`. Clients read the HTTP status for these conditions, so no change is expected; anything matching on the old codes `-32001` and `-32000` needs updating.
+
+### Fixed
+
+- A tool result that renders a long or multi-line value, such as a page's wikitext, now closes it with a blank line before the next field. Previously the next field's label was the only cue the value had ended, so content containing a line like `Summary: …` read as a field of the result.
+- An error during hosted OAuth sign-in is now reported back to the application that started it, instead of only shown on a page the application never sees, so a client no longer waits indefinitely for a callback that never arrives. This covers a missing or non-S256 PKCE challenge and a `resource` naming another server.
+- A sign-in request asking for a response type this server does not support is now refused, instead of being answered with an authorization code it did not ask for.
+- Cancelling a tool call, or disconnecting while one is still running, now stops the request the server had in flight to the wiki, instead of letting it run to completion. Cancelling a write is not an undo: an edit already committed by the wiki stays committed. Cancelled calls are logged as `cancelled` rather than counted as wiki failures.
+- Reading an `mcp://wikis/{wikiKey}` resource for a wiki that is not configured now fails with a JSON-RPC `-32602` error naming the URI, as the protocol requires. It previously returned an empty document, which a client could not tell from a wiki with nothing to report.
+- Wiki keys are now percent-encoded in the `mcp://wikis/` URIs the server publishes, and decoded when one is read or passed as a `wiki` argument, so a key containing a character that needs escaping, such as `%`, a comma or a non-ASCII letter, is now reachable. A key that is already a plain hostname, with or without a port, keeps the URI it had.
+- A wiki key beginning with `mcp://wikis/` is refused at startup instead of being accepted and then resolving to the wrong wiki.
+- The HTTP transport now answers errors with JSON, in the JSON-RPC or OAuth dialect the path calls for, instead of an HTML page that could carry a stack trace when `NODE_ENV` is not `production`. This covers a body that is not valid JSON, an unsupported charset or content encoding, and any error raised while serving a request.
+- The HTTP transport's `401` and `503` replies now echo the id of the request they answer. Replies to a request whose id could not be read omit the field rather than sending `null`, which this protocol revision does not admit.
+
+## [0.15.0] - 2026-07-28
+
+### Security
+
+- Reading an `mcp://wikis/{wikiKey}` resource no longer discloses the wiki's OAuth 2.0 client secret, previously served in plaintext to any client allowed to read resources. **If you run the HTTP transport with a confidential OAuth consumer, rotate that secret.** The resource now publishes only `sitename`, `server`, `articlepath`, `scriptpath`, `private` and `readOnly`.
+
+### Breaking changes
+
+- The HTTP transport no longer creates sessions: no session id is issued and `GET /mcp` answers `405`. Clients on protocol revisions before 2026-07-28 no longer receive notifications between requests, so a tool-list change after `add-wiki` or `remove-wiki` reaches them on their next connection. Tool calls are unaffected, and stdio is unchanged.
+- `MCP_SESSION_IDLE_TIMEOUT` is obsolete; remove it from the environment. The server warns while it is still set.
+- The `mcp_active_sessions` metric is replaced by `mcp_inflight_requests` and `mcp_subscription_streams`.
+- Reading NeoWiki subjects now requires NeoWiki from 2026-07-27 or later, which renamed a Statement's property type to `propertyType` (ProfessionalWiki/NeoWiki#1169). Against an earlier NeoWiki the type now reads as empty, so update the wiki before upgrading the server.
+
+### Added
+
+- The server now speaks MCP protocol revision 2026-07-28 on both transports. Clients on earlier revisions are served as before.
+- Plugin installs can now be pointed at your own wiki: Claude Code prompts for a configuration file, and the Codex plugin forwards `CONFIG` from the shell it is launched from. Previously both were stuck on English Wikipedia.
+- The server now warns at startup when `CONFIG` points at a file that does not exist, instead of silently falling back to English Wikipedia.
+
+### Changed
+
+- The server now runs on version 2 of the MCP TypeScript SDK. No configuration changes are needed. Tool input schemas are now published as JSON Schema 2020-12 instead of draft-07, which matters only to a client that validates against a draft-07-only validator.
+- Over HTTP, event streams now carry a keep-alive every 15 seconds, so a reverse proxy that drops idle connections no longer cuts a waiting client's notification stream.
+- Calling a tool the server is not offering now fails the call outright, instead of returning the error as the tool's result. Clients that call only what the server advertises are unaffected.
+- `MCP_ALLOWED_ORIGINS` is now matched on hostname rather than whole origin, so `https://wiki.example.org` also admits other schemes and ports on that host; enforce those at your reverse proxy if you need to. In exchange, a trailing slash, a path, an explicit `:443` or a bare hostname all work now, where each previously rejected every browser request.
+- `tool_call` telemetry lines no longer carry `session_id`, and shutdown events no longer report `sessions_at_signal` / `sessions_closed`. The hashed `caller` field remains.
+
+### Fixed
+
+- The HTTP server no longer exits when a `GET /ready` probe finds the default wiki slow or unreachable; it answers the documented `503 not_ready` instead.
+- Readiness probes arriving while an earlier one is still running now share its result, so a slow wiki is asked once rather than once per waiting probe.
+- A wiki added with `add-wiki` to a deployment where every wiki is read-only is now read-only itself. It was previously writable, which revealed all the write tools.
+
+## [0.14.0] - 2026-07-23
+
+### Breaking changes
+
+- Hosted OAuth proxy: the upstream OAuth consumer must now be **confidential**. Set `oauth2ClientSecret` (or the `MCP_OAUTH2_CLIENT_SECRET` environment variable) for the default wiki; the proxy refuses to start without it. A confidential consumer is what lets the proxy refresh the upstream token, so users stay signed in past the wiki's OAuth2 access-token lifetime (one hour by default). A deployment using a public or PKCE consumer must register a confidential one and supply its secret.
+
+### Added
+
+- Edit attribution can now be turned off per wiki. Set `"attributeEdits": false` in a wiki's `config.json` entry to drop the `(via <tool> on MediaWiki MCP Server)` suffix from page and file edit summaries. It stays on by default.
+- Claude Code and Codex can now install the server as a plugin. Add the repository as a plugin marketplace once, then install from it, instead of writing configuration by hand. See the README install section.
+- Hosted OAuth proxy: verified first-party MCP clients now work out of the box. Their OAuth callbacks are trusted by default, with no `MCP_OAUTH_ALLOWED_REDIRECTS` configuration.
+- Hosted OAuth proxy: the `MCP_OAUTH_ALLOWED_REDIRECTS` environment variable lets a deployment admit further MCP clients beyond the trusted defaults. List exact redirect URIs, or use an `https://…/*` prefix pattern. Loopback, claude.ai, and the verified first-party clients always remain allowed.
+- Hosted OAuth proxy: support for Client ID Metadata Documents (CIMD). A CIMD-capable client connects using a stable, vendor-hosted identity, so there is no per-client redirect entry to curate. The proxy trusts the verified first-party document hosts by default; add more with `MCP_OAUTH_CIMD_ALLOWED_HOSTS`.
+- Hosted OAuth proxy: the consent page now shows where the user will be sent after approving, either the client's callback host or "an application on this device" for a local client.
+- Hosted OAuth proxy: IPv6 loopback (`http://[::1]:…`) redirect URIs are now accepted at client registration, per RFC 8252.
+- Metrics: the `/metrics` endpoint now reports the hosted OAuth proxy store's size and flush cost, so operators can watch the store grow, see how long each persistence write takes, and alert when one fails. The new series are the `mcp_proxy_store_upstream_tokens` and `mcp_proxy_store_clients` gauges, an `mcp_proxy_store_flush_duration_seconds` histogram, and an `mcp_proxy_store_flush_failures_total` counter.
+
+### Changed
+
+- The documented install configurations and one-click install badges now pass `-y` to npx, matching the bundled plugin manifests. This avoids an install-confirmation step for anyone whose npm is configured to require one.
+- Hosted OAuth proxy: sign-in state now survives server restarts and deploys. Registered clients and upstream tokens are persisted to a local, encrypted file, so users are no longer signed out on every upgrade. In Docker, mount a volume at the store path (`/app/data`); see the deployment guide.
+
+### Removed
+
+- The Gemini CLI extension has been retired, because Gemini CLI stopped serving consumer Google AI tiers in June 2026. Use Antigravity instead, which offers to import an existing Gemini CLI configuration. If your licence keeps Gemini CLI (for example a Code Assist Standard or Enterprise licence), add the standard configuration to its `~/.gemini/settings.json`.
+
+### Fixed
+
+- Clients no longer show a spurious `Expected ',' or ']' after array element in JSON` warning next to otherwise successful requests.
+- The HTTP server now logs a clear message and exits cleanly when it cannot bind its port, for example because the port is already in use or permission is denied, instead of terminating with an uncaught exception and a raw stack trace.
+- Hosted OAuth proxy: a client that identifies by a vendor-hosted URL (Client ID Metadata Document) is now rejected if any redirect URI in its document is not an `https`, loopback-`http`, or custom-scheme (for example `vscode://`) URL. A cleartext `http` redirect to a non-loopback host would let a network attacker on that path intercept the authorization code.
+- Hosted OAuth proxy: clients that use a loopback callback on a variable port, including those that register a portless `http://127.0.0.1/` URI, now complete the flow instead of failing with "redirect_uri not registered", per RFC 8252.
+- Hosted OAuth proxy: an upstream token refresh the wiki rejects with `invalid_client` (client authentication failed) is now reported as an authentication failure, so the client prompts for sign-in again instead of looping on a retryable "temporarily unavailable".
+- Hosted OAuth proxy: a momentary wiki outage while refreshing a near-expiry token on an active connection no longer forces the client to sign in again. The request continues with the still-valid token, or gets a retryable response, instead of a sign-in challenge triggered by a transient failure. Concurrent requests that both trigger a refresh now share one upstream refresh rather than racing.
+
+## [0.13.1] - 2026-07-09
+
+### Fixed
+
+- Trying to create, edit, or move a page in a protected namespace without the required right is now reported as a permission error rather than a generic upstream failure.
+- An expired or invalid OAuth access token is now reported as an authentication error rather than a generic upstream failure, so an OAuth-aware client can tell the token needs to be refreshed.
+
+## [0.13.0] - 2026-06-17
+
+### Added
+
+- **Hosted OAuth proxy (HTTP transport).** Opt-in mode in which the server signs each user into MediaWiki as themselves, so an OAuth-aware client pointed at `https://<wiki>/mcp` needs no manual tokens. Anonymous read still works; writes require sign-in. Enable it by running the HTTP transport with `MCP_PUBLIC_URL` and `MCP_OAUTH_JWT_SIGNING_KEY` set and an `oauth2ClientId` on the default wiki. See [docs/deployment.md — hosted OAuth sign-in](docs/deployment.md#hosted-oauth-sign-in).
+- New per-wiki `publicServer` field: the browser-facing base URL, used when it differs from the internal `server` (e.g. a Docker-network alias). Defaults to `server`.
+- New hosted-proxy environment variables: `MCP_PUBLIC_URL` (the server's public URL), `MCP_OAUTH_JWT_SIGNING_KEY` (≥32 characters), `MCP_OAUTH2_CLIENT_ID` (the default wiki's OAuth2 client id — overrides `config.json`, so a deployment can supply the value its wiki generates at registration time), `MCP_OAUTH_TOKEN_TTL` (default `55m`), and `MCP_OAUTH_CONSENT_TTL` (default `30d`). Durations accept forms like `55m`/`1h`/`30d` or bare seconds.
+- **`private` wikis require sign-in over HTTP.** A wiki configured `private: true` (its MediaWiki disallows anonymous reads) now challenges every anonymous HTTP request — including the initial connection — with a `401`, so an OAuth-capable client prompts for login at connect instead of failing later. Public wikis are unchanged: anonymous reads still work, and only writes prompt for sign-in.
+
+### Changed
+
+- The OAuth sign-in and consent pages now have a styled layout instead of bare HTML, and a failed or cancelled authorization shows a readable page rather than a raw error.
+
+### Fixed
+
+- Extension-pack write tools (NeoWiki's `create-subject`, `update-subject`, `delete-subject`, and `set-main-subject`) are now hidden from `tools/list` and rejected by the per-call guard when the active wiki is configured `readOnly`, the same as core write tools. Previously the read-only gate covered only the core writes, so a read-only endpoint still advertised and dispatched extension-pack writes; an actual write was then stopped only by the wiki's own permissions. Write tools are identified by their `readOnlyHint: false` annotation, so future packs are covered automatically. (#411)
+
+## [0.12.0] - 2026-06-11
+
+### Added
+
+- `MCP_TRUSTED_HOSTS` environment variable: a comma-separated allowlist of hosts exempt from the outbound SSRF guard's public-IP check, letting you deliberately point the server at an internal destination — such as a Docker-network alias like `mediawiki.svc` behind a reverse proxy. Without it, the anonymous siteinfo probe to a private address is refused, so extension-gated tools (Cargo, Semantic MediaWiki, Bucket, NeoWiki) never register and `get-site-info` reports no extensions. A bare host matches any port and `host:port` matches only that port; matching is exact, and a listed host is still DNS-resolved and pinned. Separate from the inbound `MCP_ALLOWED_HOSTS` Host-header allowlist. (#410)
+
+## [0.11.0] - 2026-06-10
+
+### Added
+
+- NeoWiki integration: tools to explore a NeoWiki knowledge graph — list schemas, inspect a schema's properties, search subjects by name, fetch a subject or a page's subjects, and run read-only Cypher queries. Available on wikis with the NeoWiki extension installed.
+- NeoWiki write tools: create a subject on a page (as a child or the main subject), replace a subject's label and statements, delete a subject, set or clear a page's main subject, and dry-run validate a proposed subject before writing. The four write tools require the `edit` right on the target wiki; validation is read-only. Available on wikis with the NeoWiki extension installed.
+- `get-file-data` tool: returns a wiki file's image inline (base64) so clients that can't reach the wiki host can still send the image to the model for visual analysis. Returns a scaled rendition sized by `width`. Images and files MediaWiki can rasterize (SVG, PDF, DjVu) come back as an image; non-renderable types (audio, video, binaries) error and point to `get-file`.
+- `MCP_FILE_DATA_MAX_BYTES` environment variable: a hard ceiling on the encoded size of a `get-file-data` response (default 1 MB).
+- `whoami` tool: reports which account the current session is acting as on a wiki — the username, whether the session is anonymous, and the user groups it belongs to (optionally the full rights list). Use it to confirm who edits will be attributed to before writing, for example when creating a page under your own user namespace.
+- `MCP_UPLOAD_MAX_BYTES` environment variable: caps the size the server buffers when fetching a URL for `upload-file-from-url` / `update-file-from-url` (default 100 MB). Larger files are handed to the wiki's own copy-upload.
+- `update-page` and `create-page` accept a `bot` parameter that marks the edit as a bot edit. The flag takes effect only when the authenticated account has the `bot` right (bot group, or the high-volume grant on a bot password or OAuth consumer); the response reports whether the flag applied via `botMarked`.
+
+### Changed
+
+- List responses (`get-recent-changes`, `get-page-history`, `get-links-here`, `get-category-members`, `get-pages`) now omit default and empty fields to reduce response size: boolean flags appear only when `true`, empty comments and tag lists are dropped, recent changes report the size delta without the raw old/new lengths, a category member's `type` is omitted for ordinary pages, and `get-pages` omits `requestedTitle` when it matches the resolved title. Absent flags mean `false`.
+- The `list-wikis` tool is now hidden when only a single wiki is configured, where it has nothing to list and every call already defaults to that wiki. It appears once a second wiki is configured or added.
+- The timeout for an `exec`-backed credential command was raised from 10 to 30 seconds, giving an interactive unlock (such as a 1Password prompt) time to be approved. If the command still times out, the error now explains that approving the prompt and retrying re-runs it.
+- `exec`-backed credential commands now run one at a time instead of concurrently. Resolving secrets for several wikis at once (for example when listing wikis) previously launched every command together, so an interactive unlock such as a 1Password prompt appeared once per wiki; now the first command's unlock is reused by the rest, so a single prompt covers them all.
+- `list-wikis` no longer logs into or unlocks credentials for each configured wiki. It now reads each wiki's public site data anonymously, so listing wikis never triggers a credential prompt or a login — authentication happens only when you act on a wiki.
+- `upload-file-from-url` and `update-file-from-url` now work on wikis without upload-by-URL enabled. The server fetches the file and uploads it directly, only asking the wiki to fetch the URL when the server cannot reach it (for example a private, server-unreachable address). Previously these tools failed unless the wiki had copy-uploads enabled and the account held the `upload_by_url` right.
+
+## [0.10.0] - 2026-05-30
+
+### Security
+
+- Updated dependencies to resolve known advisories, including a high-severity issue in the HTTP client used for outbound wiki requests.
+
+### Breaking changes
+
+- Removed the `set-wiki` tool. Pass the `wiki` argument on each tool call instead.
+- `remove-wiki` now refuses to remove the configured default wiki (it previously refused to remove the wiki that was currently selected).
+
+### Added
+
+- `get-site-info` tool: returns a wiki's MediaWiki version, content language, title case-sensitivity, maximum page size, namespace map, installed extensions, and content license; optionally page/article/user/edit statistics.
+- `move-page` tool that renames a wiki page (and, by default, its talk page), optionally moving subpages and suppressing the redirect left at the old title.
+- `get-links-here` tool that lists the pages referencing a target page — pages that link to it, embed it as a template, or display it as a file — including pages that reach it through a redirect.
+- `list-wikis` tool reporting every configured wiki — its key, sitename, server, whether it is read-only or the default, whether it is reachable, which extension-gated tools work on it, and, for an OAuth-configured wiki, its authorization server.
+- Optional `wiki` argument on every tool that operates on a wiki (all except the wiki-management and OAuth tools), naming the wiki that call acts on. Accepts a wiki key (e.g. `en.wikipedia.org`) or the full `mcp://wikis/{wikiKey}` URI.
+- Tool responses now report the wiki the call ran against.
+- `MCP_SESSION_IDLE_TIMEOUT` env var (default `1800` seconds) closes HTTP sessions that have been idle for the configured window. Any request resets the timer; setting it to `0` disables expiry.
+
+### Changed
+
+- URLs returned by the server — page links, and the `server` reported by `list-wikis` and the `mcp://wikis` resource — now use the wiki's own public address rather than the address configured for API access. This corrects links when the wiki is reached over an internal or Docker hostname. Links fall back to the configured address when the wiki is unreachable.
+- Tool calls target a wiki named per call, defaulting to the configured default wiki, instead of a server-side selection that had to be set first.
+- Extension-gated tools (`cargo-*`, `smw-*`, `bucket-query`) and the write tools are now offered whenever *any* configured wiki supports them, instead of only when the default wiki does. A call targeting a wiki that lacks the capability returns a clear error.
+- Wiki credentials backed by an `exec` command are now fetched the first time that wiki is used, instead of when the server starts. A slow or failing credential command no longer delays startup or prevents the server from starting — the error now appears only when that wiki is used.
+- The HTTP transport's OAuth discovery now covers every configured wiki: the `/.well-known/oauth-protected-resource` document advertises every OAuth wiki's authorization server, and a tokenless client is challenged only when no configured wiki is usable without a token — a deployment that mixes OAuth and non-OAuth wikis still serves tokenless clients.
+- An HTTP client may now send a different `Authorization: Bearer` token per request, so one session can work with wikis on different authorization servers. A call targeting an OAuth wiki with no usable token returns a clear authentication error.
+
+## [0.9.1] - 2026-05-13
+
+### Changed
+
+- Documented the `/mcp` endpoint path explicitly in `docs/deployment.md`.
+
+### Fixed
+
+- Startup failures (e.g. config-loading errors) now exit with code 1 instead of leaking a Node unhandled-rejection warning on stderr.
+- Bot-password sessions are now renewed automatically when the MediaWiki session expires (default `$wgObjectCacheSessionExpiry` = 1 hour). Previously, write tools (e.g. `update-page`, `create-page`) failed with `permissiondenied` after the expiry and only a server restart recovered.
+
+## [0.9.0] - 2026-05-01
+
+### Breaking changes
+
+- Bumped `engines.node` to `>=22.12.0` (was `>=18`). Node 20 reached EOL in April 2026; Node 22 LTS is supported through April 2027. Downstream consumers pinned to Node 18 or 20 must upgrade.
+
+### Added
+
+- Browser-based OAuth 2.0 login. Set `oauth2ClientId` (and, for MediaWiki, `oauth2CallbackPort`) on a wiki entry to opt in. HTTP transport uses standard OAuth discovery (RFC 9728) plus `WWW-Authenticate` headers so OAuth-aware MCP clients can drive auth-code+PKCE flows. On stdio, the server opens a browser the first time a tool needs a token, stores the result in `~/.config/mediawiki-mcp/credentials.json`, and refreshes it before expiry. Static credentials in `config.json` continue to work for wikis that don't opt in.
+  - Two new stdio-only tools: `oauth-status` (lists wikis with stored tokens, scopes, and expiry — never the values) and `oauth-logout` (removes stored tokens, one wiki or all).
+  - Three new env vars: `MCP_OAUTH_CREDENTIALS_FILE` overrides the token-store path; `MCP_OAUTH_NO_BROWSER=1` skips the browser launch and logs the auth URL to stderr (useful in headless environments); `MCP_PUBLIC_URL` overrides the request-derived public URL for awkward proxy setups.
+  - Two new per-wiki config fields: `oauth2ClientId` (public-client identifier from `Special:OAuthConsumerRegistration/propose/oauth2`) and `oauth2CallbackPort` (loopback port for the OAuth callback URL — required for MediaWiki's Extension:OAuth, which exact-matches the redirect URI).
+- `MCP_LOG_LEVEL` env var (default `debug`) sets the minimum severity for logger output, filtering both stderr telemetry and the `sendLoggingMessage` broadcast. Accepts the eight RFC 5424 levels plus `silent`.
+- `smw-query` and `smw-list-properties` tools for [Semantic MediaWiki](https://github.com/SemanticMediaWiki/SemanticMediaWiki) — runs `#ask` queries and discovers SMW properties with copy-paste templates. Auto-detected from `siteinfo`; only registered on wikis that have SMW installed.
+- `bucket-query` tool for the [Bucket extension](https://github.com/weirdgloop/mediawiki-extensions-Bucket) — runs Lua-style queries and returns row-shaped results. Same gating.
+- `cargo-query`, `cargo-list-tables`, and `cargo-describe-table` tools for the [Cargo extension](https://www.mediawiki.org/wiki/Extension:Cargo). Each calls one Cargo API action (`cargoquery` / `cargotables` / `cargofields`); same gating, and also recognised under the rebranded name `LIBRARIAN` used by wiki.gg-hosted wikis.
+- Optional `GET /metrics` Prometheus endpoint on the HTTP transport, enabled with `MCP_METRICS=true`. Exposes tool-call counters, duration histograms, upstream status totals, active sessions, and readiness-probe failures.
+- Graceful shutdown — `SIGTERM` and `SIGINT` drain in-flight `/mcp` calls and close active StreamableHTTP sessions before exit, emitting `event: "shutdown"` / `event: "shutdown_complete"` on stderr. Configurable via `MCP_SHUTDOWN_GRACE_MS` (default `10000`). Stdio transport closes its single transport on the same signals.
+- `MCP_MAX_REQUEST_BODY` env var (default `1mb`) caps HTTP request body size, replacing body-parser's silent 100 kB default that was rejecting long-form wikitext edits. Oversize requests return a JSON-RPC 413; the resolved value appears in the startup banner.
+- Published Docker image at `ghcr.io/professionalwiki/mediawiki-mcp-server`. Multi-arch (`linux/amd64`, `linux/arm64`); release builds carry SLSA provenance, SPDX SBOM, and a cosign keyless signature; edge builds (`master` tip) carry attestations only. Tag conventions and verification command in [`docs/deployment.md`](docs/deployment.md).
+
+### Changed
+
+- Reorganised user-facing docs: extracted `docs/operations.md` for day-2 concerns (logs, `/health`/`/ready`, metrics, graceful shutdown); moved per-request bearer and reverse-proxy documentation from `docs/configuration.md` into `docs/deployment.md`; slimmed the README's authentication section; consolidated manual-token and bot-password instructions in `docs/configuration.md`; converted blockquote callouts to GitHub admonitions.
+- Hardened the Docker image. Build context is now an allow-list (`src/`, `package.json`, `package-lock.json`, `tsconfig.json`, `server.json`) rather than the entire repo. Image labels follow OCI image-spec: dropped the deprecated `maintainer` and hand-maintained `image.version`; added `image.title`, `image.url`, `image.source`, `image.licenses`, and a per-build `image.revision` populated from a `GIT_SHA` build arg. Both build stages now install dependencies with `npm ci --ignore-scripts` so third-party postinstall scripts can't run during the SLSA-attested build. The `node:lts-alpine` base is pinned by digest, with Dependabot tracking digest updates so base-image patches reach published builds via auditable git history.
+- Switched the dev toolchain to compiled tooling for substantially faster iteration: `tsgo` (Go-based TypeScript 7 native compiler) drives build/watch/type-check; oxlint and oxfmt (Rust-based) replace ESLint and Prettier. The new lint pipeline also runs type-aware checks, catching unawaited Promises, unbound methods used as callbacks, and accidental stringification of non-plain objects. Published packages are unaffected.
+
+### Fixed
+
+- The dispatcher OAuth gate no longer fires for `add-wiki`, `set-wiki`, `remove-wiki`, `oauth-status`, or `oauth-logout`. These tools operate on server-local state (the wiki registry, the OAuth token store) and don't need a token for the active wiki. Without this fix, a wiki whose OAuth had gone stale would render those five tools unreachable — leaving no way to switch away from it or clear its tokens.
+- Read-only wikis now hide the `update-file` and `update-file-from-url` tools. They were previously left enabled because the read-only gate's tool list was missing the two `update-file*` entries.
+- Markdown payload formatter no longer renders class instances and other non-plain objects as the bare `[object Object]`.
+
+## [0.8.0] - 2026-04-28
+
+### Added
+
+- `update-file` tool for uploading a new revision of an existing file from local disk. (#304)
+- `update-file-from-url` tool for uploading a new revision of an existing file from a URL. (#304)
+- Structured per-tool-call logs on stderr (`event: "tool_call"`) capturing tool, wiki, target, outcome, duration, caller hash, session, upstream status, and truncation. Stderr-only — never forwarded to MCP clients. (#313)
+- `GET /ready` readiness probe that calls the default wiki's `siteinfo` (3s timeout, 5s cache). Returns 200 `ready` or 503 `not_ready`. (#313)
+- Structured startup banner (`event: "startup"`) on server boot capturing version, transport, auth shape, configured wikis, and HTTP allowlists. Tokens, usernames, and passwords are never included. (#313)
+
+### Changed
+
+- `set-wiki` and `remove-wiki` are hidden from `tools/list` when fewer than two wikis are configured: `set-wiki` has nothing to switch to, and `remove-wiki` would orphan the server. (#312)
+- Logger output is now one JSON object per stderr line, replacing the previous `<level>: <message> {<json>}` text shape. Operators with stderr parsers must update them or pipe through `jq -R 'fromjson? // empty'` (or `humanlog`) for live reading. (#313)
+
+### Fixed
+
+- Docker image now includes `server.json`, so containers start instead of crashing with `Cannot find module '../server.json'`. (#322)
+
+### Security
+
+- HTTP transport refuses to start with static credentials in `config.json` unless `MCP_ALLOW_STATIC_FALLBACK=true` opts into a shared-identity deployment. (#311)
+
+## [0.7.0] - 2026-04-25
+
+### Breaking changes
+
+- HTTP transport now binds to `127.0.0.1` by default and validates the `Host` header. Deployments that exposed the server externally must explicitly set the bind address and trusted hosts. (#291)
+- Streamable HTTP transport now validates the `Origin` header on incoming requests. Browser clients without an allowed origin will be rejected.
+- All tool output has been reshaped to plain prose with unified field names. Clients that parsed the previous structured output need to be updated. (#293)
+- Tool error shapes have been standardised. Clients that pattern-matched the previous error strings need to be updated. (#287)
+- Smithery integration has been removed. Use the documented stdio, MCPB, or HTTP transports instead.
+
+### Added
+
+- `compare-pages` tool for server-side wikitext diffs.
+- `parse-wikitext` tool for previewing rendered output, including categories, links, templates, and display title.
+- `get-pages` tool for batched page fetches.
+- `get-recent-changes` tool. (#289)
+- Section editing and append/prepend modes on `update-page`. (#284)
+- Per-request OAuth2 bearer token passthrough for HTTP transport, allowing each client to act as its own wiki user. (#282)
+- Per-wiki `readOnly` configuration and a hosted deployment recipe. (#274)
+- `allowWikiManagement` config option to disable `add-wiki` and `remove-wiki`. (#270)
+- Configurable change tag for MCP-originated edits. (#271)
+- `exec` credential source and fail-fast environment variable resolution for config secrets. (#269)
+- MCP logging capability with a structured logger.
+- `MCP_CONTENT_MAX_BYTES` environment variable for tuning the byte cap on read-tool output.
+- Environment variable substitution in config files.
+- Gemini CLI extension manifest. (#290)
+- Server title, description, and instructions surfaced over MCP.
+
+### Changed
+
+- All tools migrated from the MediaWiki REST API to the `mwn` Action API. (#235)
+- Tool descriptions rewritten under a new style guide.
+- `latestId` is now optional on `update-page`.
+- Content model is auto-detected by MediaWiki on page creation.
+- Truncation is now signalled by `search-page`, `search-page-by-prefix`, `get-page-history`, and `get-category-members` when results are capped.
+- `get-category-members` caps at 500 results with opaque cursor pagination, applied after filtering.
+- `search-page` forwards the `limit` parameter only when explicitly set.
+- `@modelcontextprotocol/sdk` floor bumped to `^1.29.0`.
+- Documentation reorganised by audience. (#280)
+
+### Security
+
+- HTTP transport binds to `127.0.0.1` by default with `Host`-header validation. (#291)
+- Streamable HTTP transport validates the `Origin` header on incoming requests.
+- HTTP sessions are bound to the bearer token used to initialise them. (#292)
+- `add-wiki` blocks SSRF by validating discovery URLs.
+- `upload-file` is gated behind a configurable upload-directory allowlist. (#288)
+- `SECURITY.md` added with the disclosure policy.
+- Transitive dependencies bumped to patched versions.
+
+### Removed
+
+- Smithery integration.
+
+[Unreleased]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.13.1...v0.14.0
+[0.13.1]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.9.1...v0.10.0
+[0.9.1]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/compare/v0.6.5...v0.7.0

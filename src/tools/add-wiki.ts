@@ -1,71 +1,88 @@
 import { z } from 'zod';
-/* eslint-disable n/no-missing-import */
-import type { McpServer, RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult, TextContent, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
-/* eslint-enable n/no-missing-import */
-import { wikiService } from '../common/wikiService.js';
-import { discoverWiki } from '../common/wikiDiscovery.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
+import type { Tool } from '../runtime/tool.ts';
+import type { ManagementContext } from '../runtime/context.ts';
+import { discoverWiki } from '../wikis/wikiDiscovery.ts';
+import { callDeadline, WIKI_CONNECT_TIMEOUT_MS } from '../runtime/callDeadline.ts';
+import { SsrfValidationError } from '../transport/ssrfGuard.ts';
+import { DuplicateWikiKeyError } from '../wikis/wikiRegistry.ts';
 
-export function addWikiTool( server: McpServer ): RegisteredTool {
-	return server.tool(
-		'add-wiki',
-		'Adds a new wiki to the MCP resources from a URL.',
-		{
-			wikiUrl: z.string().url().describe( 'Any URL from the target wiki (e.g. https://en.wikipedia.org/wiki/Main_Page)' )
-		},
-		{
-			title: 'Add wiki',
-			destructiveHint: true
-		} as ToolAnnotations,
-		( { wikiUrl } ) => handleAddWikiTool( server, wikiUrl )
-	);
-}
+const inputSchema = {
+	wikiUrl: z
+		.string()
+		.url()
+		.describe('Any URL from the target wiki (e.g. https://en.wikipedia.org/wiki/Main_Page)'),
+} as const;
 
-async function handleAddWikiTool( server: McpServer, wikiUrl: string ): Promise<CallToolResult> {
-	const wikiInfo = await discoverWiki( wikiUrl );
+export const addWiki: Tool<typeof inputSchema, ManagementContext> = {
+	name: 'add-wiki',
+	wikiScoped: false,
+	description:
+		'Registers a new wiki as an MCP resource by fetching its sitename and API configuration from any URL on the wiki (e.g. a page URL). The wiki becomes available at mcp://wikis/<servername> and can be targeted by passing its key as the `wiki` argument to any wiki tool. Fails if the URL is not a MediaWiki wiki or if a wiki with the same key is already registered.',
+	inputSchema,
+	annotations: {
+		title: 'Add wiki',
+		readOnlyHint: false,
+		destructiveHint: false,
+		idempotentHint: true,
+		openWorldHint: true,
+	},
+	failureVerb: 'add wiki',
+	target: (a) => a.wikiUrl,
 
-	if ( wikiInfo === null ) {
-		return {
-			content: [
-				{
-					type: 'text',
-					text: 'Failed to determine wiki info. Please ensure the URL is correct and the wiki is accessible.'
-				} as TextContent
-			],
-			isError: true
-		};
-	}
+	async handle({ wikiUrl }, ctx: ManagementContext): Promise<CallToolResult> {
+		let wikiInfo;
+		try {
+			wikiInfo = await discoverWiki(wikiUrl, callDeadline(WIKI_CONNECT_TIMEOUT_MS, 'connecting'));
+		} catch (error) {
+			if (error instanceof SsrfValidationError) {
+				return ctx.format.invalidInput(`Failed to add wiki: ${error.message}`);
+			}
+			throw error;
+		}
 
-	try {
-		const newConfig = {
+		if (wikiInfo === null) {
+			return ctx.format.error(
+				'upstream_failure',
+				'Failed to determine wiki info. Please ensure the URL is correct and the wiki is accessible.',
+			);
+		}
+
+		// A wiki added at runtime must not be more privileged than the deployment
+		// it joins. `add-wiki` takes only a URL, so the caller cannot express a
+		// read-only intent; inheriting the restrictive posture is the safe
+		// reading of an ambiguous request. Without this, one call on an
+		// all-read-only deployment revealed every write tool, because the
+		// tools/list gate offers writes as soon as ANY configured wiki is
+		// writable and an added wiki carried no `readOnly` field at all.
+		const configured = Object.values(ctx.wikis.getAll());
+		const readOnly = configured.length > 0 && configured.every((w) => w.readOnly === true);
+
+		try {
+			ctx.wikis.add(wikiInfo.servername, {
+				sitename: wikiInfo.sitename,
+				server: wikiInfo.server,
+				articlepath: wikiInfo.articlepath,
+				scriptpath: wikiInfo.scriptpath,
+				token: null,
+				private: false,
+				readOnly,
+			});
+		} catch (error) {
+			if (error instanceof DuplicateWikiKeyError) {
+				return ctx.format.conflict(error.message);
+			}
+			throw error;
+		}
+
+		await ctx.reconcile();
+
+		return ctx.format.ok({
+			wikiKey: wikiInfo.servername,
 			sitename: wikiInfo.sitename,
 			server: wikiInfo.server,
 			articlepath: wikiInfo.articlepath,
 			scriptpath: wikiInfo.scriptpath,
-			token: null,
-			private: false
-		};
-
-		wikiService.add( wikiInfo.servername, newConfig );
-		server.sendResourceListChanged();
-
-		return {
-			content: [
-				{
-					type: 'text',
-					text: `${ wikiInfo.sitename } (mcp://wikis/${ wikiInfo.servername }) has been added to MCP resources.`
-				} as TextContent
-			]
-		};
-	} catch ( error ) {
-		return {
-			content: [
-				{
-					type: 'text',
-					text: `Failed to add wiki: ${ ( error as Error ).message }`
-				} as TextContent
-			],
-			isError: true
-		};
-	}
-}
+		});
+	},
+};

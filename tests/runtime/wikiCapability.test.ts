@@ -1,0 +1,259 @@
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import {
+	checkWikiCapability,
+	isWriteTool,
+	WRITE_TOOL_NAMES,
+} from '../../src/runtime/wikiCapability.ts';
+import { fakeContext } from '../helpers/fakeContext.ts';
+import { withRequestFields } from '../../src/runtime/requestContext.ts';
+import type { WikiConfig } from '../../src/config/loadConfig.ts';
+
+const rwWiki: WikiConfig = {
+	sitename: 'X',
+	server: 'https://x',
+	articlepath: '/wiki',
+	scriptpath: '/w',
+};
+const roWiki: WikiConfig = { ...rwWiki, readOnly: true };
+const oauthWiki: WikiConfig = { ...rwWiki, oauth2ClientId: 'client-id' };
+const oauthWithTokenWiki: WikiConfig = {
+	...rwWiki,
+	oauth2ClientId: 'client-id',
+	token: 'static-token',
+};
+
+function ctx(
+	hasExt: boolean,
+	wikiConfig: WikiConfig,
+	reachable = true,
+	transport: 'http' | 'stdio' = 'stdio',
+) {
+	return fakeContext({
+		transport,
+		wikis: {
+			getAll: () => ({ w: wikiConfig }),
+			get: () => wikiConfig,
+			add: () => {},
+			remove: () => {},
+			isManagementAllowed: () => true,
+		},
+		wikiProbe: {
+			hasExtension: async () => hasExt,
+			hasAnyExtension: async () => hasExt,
+			invalidate: () => {},
+			inspect: async () => ({ reachable, extensions: new Set<string>() }),
+		},
+	});
+}
+
+describe('checkWikiCapability', () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	it('rejects an extension tool when the wiki lacks the extension', async () => {
+		const result = await checkWikiCapability('cargo-query', 'w', ctx(false, rwWiki));
+		expect(result?.isError).toBe(true);
+		expect(JSON.stringify(result?.content)).toContain('not installed');
+	});
+
+	it('reports an unreachable wiki rather than claiming the extension is missing', async () => {
+		const result = await checkWikiCapability('cargo-query', 'w', ctx(false, rwWiki, false));
+		expect(result?.isError).toBe(true);
+		const text = JSON.stringify(result?.content);
+		expect(text).toContain('could not be reached');
+		expect(text).not.toContain('not installed');
+	});
+
+	it('allows an extension tool when the wiki has the extension', async () => {
+		expect(await checkWikiCapability('cargo-query', 'w', ctx(true, rwWiki))).toBeUndefined();
+	});
+
+	it('rejects a write tool against a read-only wiki', async () => {
+		const result = await checkWikiCapability('update-page', 'w', ctx(true, roWiki));
+		expect(result?.isError).toBe(true);
+		expect(JSON.stringify(result?.content)).toContain('read-only');
+	});
+
+	it('allows a write tool against a writable wiki', async () => {
+		expect(await checkWikiCapability('update-page', 'w', ctx(true, rwWiki))).toBeUndefined();
+	});
+
+	it('rejects an extension write tool against a read-only wiki', async () => {
+		const result = await checkWikiCapability('neowiki-create-subject', 'w', ctx(true, roWiki));
+		expect(result?.isError).toBe(true);
+		expect(JSON.stringify(result?.content)).toContain('read-only');
+	});
+
+	it('allows an extension read tool against a read-only wiki', async () => {
+		expect(
+			await checkWikiCapability('neowiki-cypher-query', 'w', ctx(true, roWiki)),
+		).toBeUndefined();
+	});
+
+	it('returns undefined for a plain read tool', async () => {
+		expect(await checkWikiCapability('get-page', 'w', ctx(false, rwWiki))).toBeUndefined();
+	});
+
+	it('rejects an HTTP call to an OAuth-only wiki with no usable token', async () => {
+		const result = await checkWikiCapability('get-page', 'w', ctx(false, oauthWiki, true, 'http'));
+		expect(result?.isError).toBe(true);
+		const raw = result?.content?.map((c) => (c as { text?: string }).text).join('') ?? '';
+		const message = (JSON.parse(raw) as { message: string }).message;
+		expect(message).toContain('requires an authenticated user');
+		expect(message).toContain('Wiki "w"');
+		// The actionable half, which differs by deployment: with no way to obtain a
+		// token, asking the caller for one would send it at a transport that refuses
+		// it, so the message names the operator's action instead.
+		expect(message).toContain('hosted OAuth sign-in is not configured');
+		expect(message).not.toContain('Send an Authorization: Bearer');
+	});
+
+	it('asks the caller for a token instead once forwarding is opted into', async () => {
+		vi.stubEnv('MCP_ALLOW_BEARER_PASSTHROUGH', 'true');
+		const result = await checkWikiCapability('get-page', 'w', ctx(false, oauthWiki, true, 'http'));
+		expect(result?.isError).toBe(true);
+		const raw = result?.content?.map((c) => (c as { text?: string }).text).join('') ?? '';
+		const message = (JSON.parse(raw) as { message: string }).message;
+		expect(message).toContain('Send an Authorization: Bearer');
+		expect(message).not.toContain('hosted OAuth sign-in is not configured');
+	});
+
+	it('allows an HTTP call to an OAuth-only wiki when a runtime bearer is present', async () => {
+		const result = await withRequestFields({ runtimeToken: 'tok' }, () =>
+			checkWikiCapability('get-page', 'w', ctx(false, oauthWiki, true, 'http')),
+		);
+		expect(result).toBeUndefined();
+	});
+
+	it('allows an HTTP call to an OAuth wiki with static credentials configured', async () => {
+		const result = await checkWikiCapability(
+			'get-page',
+			'w',
+			ctx(false, oauthWithTokenWiki, true, 'http'),
+		);
+		expect(result).toBeUndefined();
+	});
+
+	it('fires the OAuth check before the extension check', async () => {
+		// cargo-query is an extension tool, and the wiki lacks the extension; the
+		// OAuth error must surface first.
+		const result = await checkWikiCapability(
+			'cargo-query',
+			'w',
+			ctx(false, oauthWiki, true, 'http'),
+		);
+		expect(result?.isError).toBe(true);
+		expect(JSON.stringify(result?.content)).toContain('requires an authenticated user');
+		expect(JSON.stringify(result?.content)).not.toContain('not installed');
+	});
+
+	it('does not fire the OAuth check on the stdio transport', async () => {
+		const result = await checkWikiCapability('get-page', 'w', ctx(false, oauthWiki, true, 'stdio'));
+		expect(result).toBeUndefined();
+	});
+
+	it('does not block an HTTP call to a non-OAuth wiki', async () => {
+		const result = await checkWikiCapability('get-page', 'w', ctx(false, rwWiki, true, 'http'));
+		expect(result).toBeUndefined();
+	});
+});
+
+// A pack's wikiGate is union-gated, so the tool stays offered while one wiki
+// satisfies it and every call to a wiki that does not has to be refused here.
+// These run against the real wikibase pack rather than a synthetic one, since
+// what they assert is that a declared gate needs nothing from the handler.
+describe('checkWikiCapability — pack wiki gates', () => {
+	// Only `served` publishes a query service in its siteinfo; both are Wikibase
+	// repositories, so the extension check passes for each.
+	function twoWikiCtx() {
+		const wikis: Record<string, WikiConfig> = { served: rwWiki, bare: rwWiki };
+		return fakeContext({
+			wikis: {
+				getAll: () => wikis,
+				get: (key: string) => wikis[key],
+				add: () => {},
+				remove: () => {},
+				isManagementAllowed: () => true,
+			},
+			wikiProbe: {
+				hasExtension: async () => true,
+				hasAnyExtension: async () => true,
+				invalidate: () => {},
+				inspect: async (key: string) => ({
+					reachable: true,
+					extensions: new Set<string>(['WikibaseRepository']),
+					...(key === 'served' ? { sparqlEndpoint: 'https://query.example/sparql' } : {}),
+				}),
+			},
+		});
+	}
+
+	it('refuses a gated tool on a wiki that does not satisfy the gate', async () => {
+		const result = await checkWikiCapability('wikibase-query', 'bare', twoWikiCtx());
+
+		expect(result?.isError).toBe(true);
+		const message = JSON.stringify(result?.content);
+		expect(message).toContain('advertises no query service');
+		expect(message).toContain('bare');
+	});
+
+	it('points a refused caller at the wikis that do satisfy the gate', async () => {
+		const result = await checkWikiCapability('wikibase-query', 'bare', twoWikiCtx());
+
+		expect(JSON.stringify(result?.content)).toContain(
+			'Use list-wikis to see which wikis have one.',
+		);
+	});
+
+	it('allows the same tool on the wiki that satisfies the gate', async () => {
+		expect(await checkWikiCapability('wikibase-query', 'served', twoWikiCtx())).toBeUndefined();
+	});
+
+	it('leaves the pack’s ungated tools alone on the unsatisfied wiki', async () => {
+		expect(await checkWikiCapability('wikibase-get-entity', 'bare', twoWikiCtx())).toBeUndefined();
+	});
+});
+
+describe('WRITE_TOOL_NAMES', () => {
+	// Exact, so a tool whose annotation puts it on the wrong side fails here,
+	// and adding a write tool means saying so.
+	it('holds exactly the tools that write to a wiki', () => {
+		expect([...WRITE_TOOL_NAMES].sort()).toEqual(
+			[
+				'create-page',
+				'delete-page',
+				'move-page',
+				'protect-page',
+				'set-my-pronouns',
+				'undelete-page',
+				'update-file',
+				'update-file-from-url',
+				'update-page',
+				'upload-file',
+				'upload-file-from-url',
+				'neowiki-create-subject',
+				'neowiki-delete-subject',
+				'neowiki-set-main-subject',
+				'neowiki-update-subject',
+				'wikibase-add-statement',
+				'wikibase-edit-entity',
+			].sort(),
+		);
+	});
+});
+
+describe('isWriteTool', () => {
+	it('counts a wiki tool that declares it writes', () => {
+		expect(isWriteTool({ annotations: { readOnlyHint: false } })).toBe(true);
+	});
+
+	it('does not count a tool that declares it only reads', () => {
+		expect(isWriteTool({ annotations: { readOnlyHint: true } })).toBe(false);
+	});
+
+	// Such a tool, like oauth-logout, names no wiki for the gate to act on.
+	it('does not count a tool that is not wiki-scoped', () => {
+		expect(isWriteTool({ annotations: { readOnlyHint: false }, wikiScoped: false })).toBe(false);
+	});
+});

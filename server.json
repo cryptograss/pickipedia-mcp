@@ -1,24 +1,100 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.ProfessionalWiki/mediawiki-mcp-server",
   "title": "MediaWiki MCP Server",
   "description": "MCP server enabling AI clients to interact with any MediaWiki wiki through standard tools",
-  "version": "0.6.0",
+  "version": "0.19.0",
   "repository": {
     "url": "https://github.com/ProfessionalWiki/MediaWiki-MCP-Server",
     "source": "github"
   },
   "packages": [
     {
-      "registryType": "npm",
-      "identifier": "@professional-wiki/mediawiki-mcp-server",
-      "version": "0.6.0",
+      "registryType": "mcpb",
+      "identifier": "https://github.com/ProfessionalWiki/MediaWiki-MCP-Server/releases/download/v0.18.0/MediaWiki-MCP-Server.mcpb",
+      "fileSha256": "6a40dda408643e959cdcb7140d55bb615ad61f08f9fe513439e5dae78a4b1f29",
+      "transport": {
+        "type": "stdio"
+      },
       "environmentVariables": [
         {
           "name": "CONFIG",
           "description": "Path to your configuration file",
           "default": "config.json",
           "format": "filepath"
+        },
+        {
+          "name": "MCP_ALLOW_STATIC_FALLBACK",
+          "description": "Set to 'true' to allow HTTP startup when config.json has static credentials. Otherwise the server refuses to start, preventing silent shared-identity fallback for unauthenticated requests."
+        },
+        {
+          "name": "MCP_CONTENT_MAX_BYTES",
+          "description": "Byte cap for the content bodies and result blocks tools return (wikitext, rendered HTML, diffs, statement and row listings). An oversized response is truncated with a trailing marker describing what was left out.",
+          "format": "number",
+          "default": "75000"
+        },
+        {
+          "name": "MCP_FILE_DATA_MAX_BYTES",
+          "description": "Hard cap on the base64-encoded size of a get-file-data response. A transport/safety backstop; callers tune actual size with the tool's width parameter. Over-cap responses error rather than truncate.",
+          "format": "number",
+          "default": "1000000"
+        },
+        {
+          "name": "MCP_LOG_LEVEL",
+          "description": "Minimum severity for logger output (stderr telemetry and sendLoggingMessage broadcast). Invalid values fail loudly on first log call.",
+          "choices": [
+            "debug",
+            "info",
+            "notice",
+            "warning",
+            "error",
+            "critical",
+            "alert",
+            "emergency",
+            "silent"
+          ],
+          "default": "debug"
+        },
+        {
+          "name": "MCP_MAX_REQUEST_BODY",
+          "description": "Maximum HTTP request body size on the StreamableHTTP transport. Accepts size strings like 1mb or 512kb.",
+          "default": "1mb"
+        },
+        {
+          "name": "MCP_METRICS",
+          "description": "Set to 'true' to expose Prometheus metrics at GET /metrics on the HTTP transport. Has no effect on the stdio transport."
+        },
+        {
+          "name": "MCP_OAUTH_ALLOWED_REDIRECTS",
+          "description": "Additional allowed redirect URIs for hosted-proxy client registration: comma-separated exact URIs (which must include a host) and https prefix patterns ending in /*. Loopback, claude.ai, and verified first-party clients (ChatGPT, Cursor, VS Code) are always allowed; unset means no additional clients."
+        },
+        {
+          "name": "MCP_OAUTH_CIMD_ALLOWED_HOSTS",
+          "description": "Comma-separated additional client_id document hosts trusted for CIMD (bare host or host:port). Verified first-party hosts are always trusted."
+        },
+        {
+          "name": "MCP_OAUTH_CREDENTIALS_FILE",
+          "description": "Override the default OAuth credentials store path. Default: ~/.config/mediawiki-mcp/credentials.json on Linux/macOS, %APPDATA%\\mediawiki-mcp\\credentials.json on Windows.",
+          "format": "filepath"
+        },
+        {
+          "name": "MCP_OAUTH_NO_BROWSER",
+          "description": "Set to '1' to skip launching a browser during the OAuth dance and log the auth URL to stderr instead. Useful in headless environments and CI."
+        },
+        {
+          "name": "MCP_OAUTH_PROXY_STORE_FILE",
+          "description": "Path to the hosted OAuth proxy's encrypted state file, which lets sign-ins survive restarts. Default: proxy-store.enc under the mediawiki-mcp config dir; /app/data/proxy-store.enc in the Docker image.",
+          "format": "filepath"
+        },
+        {
+          "name": "MCP_PUBLIC_URL",
+          "description": "Override the request-derived public URL used in the protected-resource discovery doc and WWW-Authenticate header. Set this when running behind a proxy that rewrites the request Host."
+        },
+        {
+          "name": "MCP_SHUTDOWN_GRACE_MS",
+          "description": "Maximum milliseconds to wait for in-flight /mcp calls to drain on SIGTERM/SIGINT before exiting. Capped at 600000.",
+          "format": "number",
+          "default": "10000"
         },
         {
           "name": "MCP_TRANSPORT",
@@ -30,15 +106,137 @@
           "default": "stdio"
         },
         {
+          "name": "MCP_UPLOAD_MAX_BYTES",
+          "description": "Memory cap on the server-side fetch used by upload-file-from-url and update-file-from-url. Files larger than this are routed to the wiki's own copy-upload instead of being buffered by the server. Guards this server's memory, not the wiki's $wgMaxUploadSize.",
+          "format": "number",
+          "default": "104857600"
+        },
+        {
+          "name": "MCP_USER_AGENT",
+          "description": "Replaces the User-Agent header of every outbound request, which defaults to mediawiki-mcp-server/<version> (https://github.com/ProfessionalWiki/MediaWiki-MCP-Server). If you set it, give a name and an email or URL, e.g. 'ExampleBot/1.0 (bot@example.org)'."
+        },
+        {
           "name": "PORT",
           "description": "Port used for StreamableHTTP transport",
           "format": "number",
           "default": "3000"
         }
-      ],
+      ]
+    },
+    {
+      "registryType": "npm",
+      "identifier": "@professional-wiki/mediawiki-mcp-server",
+      "version": "0.18.0",
+      "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
-      }
+      },
+      "environmentVariables": [
+        {
+          "name": "CONFIG",
+          "description": "Path to your configuration file",
+          "default": "config.json",
+          "format": "filepath"
+        },
+        {
+          "name": "MCP_ALLOW_STATIC_FALLBACK",
+          "description": "Set to 'true' to allow HTTP startup when config.json has static credentials. Otherwise the server refuses to start, preventing silent shared-identity fallback for unauthenticated requests."
+        },
+        {
+          "name": "MCP_CONTENT_MAX_BYTES",
+          "description": "Byte cap for the content bodies and result blocks tools return (wikitext, rendered HTML, diffs, statement and row listings). An oversized response is truncated with a trailing marker describing what was left out.",
+          "format": "number",
+          "default": "75000"
+        },
+        {
+          "name": "MCP_FILE_DATA_MAX_BYTES",
+          "description": "Hard cap on the base64-encoded size of a get-file-data response. A transport/safety backstop; callers tune actual size with the tool's width parameter. Over-cap responses error rather than truncate.",
+          "format": "number",
+          "default": "1000000"
+        },
+        {
+          "name": "MCP_LOG_LEVEL",
+          "description": "Minimum severity for logger output (stderr telemetry and sendLoggingMessage broadcast). Invalid values fail loudly on first log call.",
+          "choices": [
+            "debug",
+            "info",
+            "notice",
+            "warning",
+            "error",
+            "critical",
+            "alert",
+            "emergency",
+            "silent"
+          ],
+          "default": "debug"
+        },
+        {
+          "name": "MCP_MAX_REQUEST_BODY",
+          "description": "Maximum HTTP request body size on the StreamableHTTP transport. Accepts size strings like 1mb or 512kb.",
+          "default": "1mb"
+        },
+        {
+          "name": "MCP_METRICS",
+          "description": "Set to 'true' to expose Prometheus metrics at GET /metrics on the HTTP transport. Has no effect on the stdio transport."
+        },
+        {
+          "name": "MCP_OAUTH_ALLOWED_REDIRECTS",
+          "description": "Additional allowed redirect URIs for hosted-proxy client registration: comma-separated exact URIs (which must include a host) and https prefix patterns ending in /*. Loopback, claude.ai, and verified first-party clients (ChatGPT, Cursor, VS Code) are always allowed; unset means no additional clients."
+        },
+        {
+          "name": "MCP_OAUTH_CIMD_ALLOWED_HOSTS",
+          "description": "Comma-separated additional client_id document hosts trusted for CIMD (bare host or host:port). Verified first-party hosts are always trusted."
+        },
+        {
+          "name": "MCP_OAUTH_CREDENTIALS_FILE",
+          "description": "Override the default OAuth credentials store path. Default: ~/.config/mediawiki-mcp/credentials.json on Linux/macOS, %APPDATA%\\mediawiki-mcp\\credentials.json on Windows.",
+          "format": "filepath"
+        },
+        {
+          "name": "MCP_OAUTH_NO_BROWSER",
+          "description": "Set to '1' to skip launching a browser during the OAuth dance and log the auth URL to stderr instead. Useful in headless environments and CI."
+        },
+        {
+          "name": "MCP_OAUTH_PROXY_STORE_FILE",
+          "description": "Path to the hosted OAuth proxy's encrypted state file, which lets sign-ins survive restarts. Default: proxy-store.enc under the mediawiki-mcp config dir; /app/data/proxy-store.enc in the Docker image.",
+          "format": "filepath"
+        },
+        {
+          "name": "MCP_PUBLIC_URL",
+          "description": "Override the request-derived public URL used in the protected-resource discovery doc and WWW-Authenticate header. Set this when running behind a proxy that rewrites the request Host."
+        },
+        {
+          "name": "MCP_SHUTDOWN_GRACE_MS",
+          "description": "Maximum milliseconds to wait for in-flight /mcp calls to drain on SIGTERM/SIGINT before exiting. Capped at 600000.",
+          "format": "number",
+          "default": "10000"
+        },
+        {
+          "name": "MCP_TRANSPORT",
+          "description": "Type of MCP server transport",
+          "choices": [
+            "stdio",
+            "http"
+          ],
+          "default": "stdio"
+        },
+        {
+          "name": "MCP_UPLOAD_MAX_BYTES",
+          "description": "Memory cap on the server-side fetch used by upload-file-from-url and update-file-from-url. Files larger than this are routed to the wiki's own copy-upload instead of being buffered by the server. Guards this server's memory, not the wiki's $wgMaxUploadSize.",
+          "format": "number",
+          "default": "104857600"
+        },
+        {
+          "name": "MCP_USER_AGENT",
+          "description": "Replaces the User-Agent header of every outbound request, which defaults to mediawiki-mcp-server/<version> (https://github.com/ProfessionalWiki/MediaWiki-MCP-Server). If you set it, give a name and an email or URL, e.g. 'ExampleBot/1.0 (bot@example.org)'."
+        },
+        {
+          "name": "PORT",
+          "description": "Port used for StreamableHTTP transport",
+          "format": "number",
+          "default": "3000"
+        }
+      ]
     }
   ]
 }
