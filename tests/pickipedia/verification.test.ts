@@ -557,7 +557,14 @@ check(
 	isExemptPage('Template:Infobox') &&
 		isExemptPage('User_talk:JMyles') &&
 		isExemptPage('User talk:JMyles') &&
-		isExemptPage('Cryptograss talk:Moods'),
+		isExemptPage('Cryptograss talk:Moods') &&
+		isExemptPage('VersionControl:PRs/magenta/295') &&
+		isExemptPage('VC:magenta/295') &&
+		isExemptPage('VC:Deploy/hunter/abc1234'),
+);
+check(
+	'Property and Category namespaces remain non-exempt (require verification)',
+	!isExemptPage('Category:Pull requests') && !isExemptPage('Property:Worked on by'),
 );
 // An emergent's journal is its own notes, not claims: the Agent namespace
 // renamed to Emergent (pickipedia#158) stays exempt under both names.

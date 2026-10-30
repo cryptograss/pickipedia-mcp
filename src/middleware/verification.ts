@@ -35,6 +35,10 @@ const EXEMPT_NAMESPACES = [
 	// its new name (pickipedia#158): the journals live there now.
 	'Agent',
 	'Emergent',
+	// VersionControl records (PRs, issues, tags, deploy notes) mirrored from git
+	// and deploy tooling: machine records rather than encyclopedic claims.
+	'VersionControl',
+	'VC',
 ];
 
 /**
