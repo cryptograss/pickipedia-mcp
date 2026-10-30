@@ -35,8 +35,10 @@ const EXEMPT_NAMESPACES = [
 	// its new name (pickipedia#158): the journals live there now.
 	'Agent',
 	'Emergent',
-	'Category',
-	'Property',
+	// VersionControl records (PRs, issues, tags, deploy notes) mirrored from git
+	// and deploy tooling: machine records rather than encyclopedic claims.
+	'VersionControl',
+	'VC',
 ];
 
 /**
@@ -47,12 +49,8 @@ const EXEMPT_NAMESPACES = [
  * they go, not claims about the world. Marked as proposals, every tick and
  * every new item waited in the review queue, and the queue filled with
  * chores; the people who use the list asked for it to be exempt.
- *
- * Machine records for pull requests (Cryptograss:PRs/...) are synced from GitHub
- * and pull request footers by automated tooling, and hold Semantic MediaWiki
- * properties that must remain bare and unwrapped to be queryable immediately.
  */
-const EXEMPT_PAGES = [/^Cryptograss:Moods\/[^/]+\/todo$/i, /^Cryptograss:PRs(\/.*)?$/i];
+const EXEMPT_PAGES = [/^Cryptograss:Moods\/[^/]+\/todo$/i];
 
 /**
  * Strip a proposal marker to get back the content underneath.
