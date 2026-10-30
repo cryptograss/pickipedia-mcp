@@ -557,8 +557,14 @@ check(
 	isExemptPage('Template:Infobox') &&
 		isExemptPage('User_talk:JMyles') &&
 		isExemptPage('User talk:JMyles') &&
-		isExemptPage('Cryptograss talk:Moods'),
+		isExemptPage('Cryptograss talk:Moods') &&
+		isExemptPage('Category:Pull requests') &&
+		isExemptPage('Property:Worked on by'),
 );
+// Machine records for pull requests are generated from GitHub, not claims: never marked.
+check('a PR record page is exempt', isExemptPage('Cryptograss:PRs/magenta/295'));
+check('as the API spells it too', isExemptPage('Cryptograss:PRs/maybelle_config/235'));
+check('a PR index page is exempt', isExemptPage('Cryptograss:PRs'));
 // An emergent's journal is its own notes, not claims: the Agent namespace
 // renamed to Emergent (pickipedia#158) stays exempt under both names.
 check(
