@@ -8,6 +8,7 @@ export type ErrorCategory =
 	| 'conflict'
 	| 'upstream_failure'
 	| 'rate_limited'
+	| 'no_change'
 	| 'authentication';
 
 export interface ErrorClassifier {
