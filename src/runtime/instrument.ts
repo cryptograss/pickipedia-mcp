@@ -17,6 +17,9 @@ const WARNING_OUTCOMES: ReadonlySet<ToolOutcome> = new Set([
 	'conflict',
 	'authentication',
 	'rate_limited',
+	// The wiki declined to save what was already there. Ordinary behaviour,
+	// not a degradation — but a caller that meant to change the page must see it.
+	'no_change',
 ]);
 
 export function levelFor(outcome: ToolOutcome): 'info' | 'warning' | 'error' {

@@ -15,6 +15,8 @@ interface ApiEditResponse {
 	result?: string;
 	pageid?: number;
 	title?: string;
+	nochange?: true;
+	oldrevid?: number;
 	newrevid?: number;
 	newtimestamp?: string;
 	contentmodel?: string;
@@ -367,6 +369,24 @@ async function submitEdit(
 		return ctx.format.error(
 			'upstream_failure',
 			`Failed to update page: ${JSON.stringify(edit ?? response)}`,
+		);
+	}
+	// A Success with no new revision is the wiki saying the submitted text is
+	// byte-identical to what the page already holds (edit.nochange): nothing
+	// was saved, and every caller that reads the result as "my edit landed"
+	// is being lied to (re, 31 Oct: three writes to Cryptograss:Agents/Tasks
+	// reported success while the page never changed, because the proposal
+	// marking sent the page's marked form back and the wiki called it no
+	// change). A caller that meant to change the page must hear that it
+	// didn't — so this is a failure, said loudly, never an ok shape without
+	// a revision ID.
+	if (edit.newrevid === undefined) {
+		return ctx.format.error(
+			'no_change',
+			`The wiki saved nothing: revision ${edit.oldrevid ?? 'current'} of "${edit.title ?? args.title}" already says ` +
+				'exactly what this write would leave. No new revision was created. If the change you meant was only to drop a proposal ' +
+				"marker ({{Bot_proposes}} or <proposed>), the marking sent the page's marked form back, which reads as no change; " +
+				'a person can strip the marker, or send the removal as <proposed action="remove"> where the namespace allows it.',
 		);
 	}
 	const resolvedTitle = edit.title ?? args.title;

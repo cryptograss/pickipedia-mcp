@@ -164,6 +164,47 @@ describe('update-page', () => {
 			expect(params).not.toHaveProperty('baserevid');
 		});
 
+		// The wiki answers a byte-identical submission with result 'Success' and no
+		// newrevid (nochange). Before 31 Oct the tool reported that as ok — page ID,
+		// title, verification note, but no latestRevisionId — and an agent read its
+		// write as landed when the wiki had saved nothing (re, Cryptograss:Agents/Tasks,
+		// three writes that reported success while the page never changed).
+		it('reports a Success with no revision as a no-change failure, never as ok', async () => {
+			const { ctx } = fakeEdit({
+				edit: {
+					result: 'Success',
+					nochange: true,
+					pageid: 5,
+					title: 'My Page',
+					contentmodel: 'wikitext',
+					oldrevid: 41,
+				},
+			});
+
+			const result = await updatePage.handle({ title: 'My Page', source: 'content' }, ctx);
+
+			const envelope = assertStructuredError(result, 'no_change');
+			expect(envelope.message).toContain('saved nothing');
+			expect(envelope.message).toContain('No new revision was created');
+		});
+
+		it('treats a missing newrevid without the nochange flag the same way', async () => {
+			const { ctx } = fakeEdit({
+				edit: {
+					result: 'Success',
+					pageid: 5,
+					title: 'My Page',
+					contentmodel: 'wikitext',
+					oldrevid: 41,
+				},
+			});
+
+			const result = await updatePage.handle({ title: 'My Page', source: 'content' }, ctx);
+
+			const envelope = assertStructuredError(result, 'no_change');
+			expect(envelope.message).toContain('revision 41');
+		});
+
 		it('returns error when the API response lacks a Success result', async () => {
 			const { ctx } = fakeEdit({
 				edit: { result: 'Failure', code: 'abusefilter-disallowed' },
