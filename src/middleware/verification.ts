@@ -379,6 +379,12 @@ function isNonWrappableLine(line: string): boolean {
 
 	return (
 		trimmed === '' ||
+		// A redirect is a pointer, not a claim, and its first line opens with #,
+		// which would otherwise read as a numbered-list item and be wrapped:
+		// '# {{Bot_proposes|REDIRECT [[…]]}}' is no redirect at all, and never
+		// becomes one, even verified (Cryptograss:Agents/Index rev 13963; re and
+		// magent, #emergence, 3 Nov 2026).
+		/^#\s*redirect\b/i.test(trimmed) ||
 		trimmed.startsWith('==') || // Headings
 		trimmed.startsWith('[[Category:') ||
 		trimmed.startsWith('{{') || // Templates
