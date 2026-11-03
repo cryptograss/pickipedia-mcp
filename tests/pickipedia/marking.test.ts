@@ -245,3 +245,39 @@ describe('a marker line is its own paragraph', () => {
 		}
 	});
 });
+
+describe('a redirect is never wrapped', () => {
+	// '#REDIRECT' opens with #, which reads as a numbered-list item: wrapped, it is
+	// no redirect at all (Cryptograss:Agents/Index rev 13963, 3 Nov 2026).
+	it('leaves the redirect line alone, whatever its spacing or case', () => {
+		for (const line of [
+			'#REDIRECT [[Cryptograss:Emergents/Index]]',
+			'# redirect [[A]]',
+			'#Redirect[[A]]',
+		]) {
+			expect(wrapProseWithBotProposes(line, undefined, undefined, 'Re')).toBe(line);
+		}
+	});
+
+	it('still marks prose after it', () => {
+		const out = wrapProseWithBotProposes(
+			'#REDIRECT [[A]]\n\nMoved here on 3 Nov.',
+			undefined,
+			undefined,
+			'Re',
+		);
+		expect(out).toBe('#REDIRECT [[A]]\n\n{{Bot_proposes|Moved here on 3 Nov.|by=Re}}');
+	});
+
+	it('still marks a numbered list item', () => {
+		expect(wrapProseWithBotProposes('# A claim.', undefined, undefined, 'Re')).toContain(
+			'Bot_proposes',
+		);
+	});
+
+	it('leaves a new redirect page unmarked', async () => {
+		expect(
+			await markNewPage(fakeMwn(revision('')), 'Banjo', '#REDIRECT [[Banjo (instrument)]]'),
+		).toBe('#REDIRECT [[Banjo (instrument)]]');
+	});
+});
