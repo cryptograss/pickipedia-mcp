@@ -281,3 +281,30 @@ describe('a redirect is never wrapped', () => {
 		).toBe('#REDIRECT [[Banjo (instrument)]]');
 	});
 });
+
+describe('a proposed removal goes through as written', () => {
+	// Magenta:Tour, 4 Nov: a step the bot had proposed held a <code> tag the
+	// overlay shows literally. The bot's rewording and its withdrawal were
+	// both handed back as the page's own copy, so the wiki saw no change.
+	const page = [
+		'== Around the Mood ==',
+		'<proposed by="Re">',
+		'{{Tour step|at=search|text=Pressing <code>/</code> opens it too.|try=yes}}',
+		'</proposed>',
+	].join('\n');
+
+	it('keeps the action="remove" wrapper instead of restoring the stored block', () => {
+		const edited = page.replace('<proposed by="Re">', '<proposed by="Re" action="remove">');
+		const out = wrapProseWithBotProposes(edited, buildLineSet(page), buildBlockSet(page));
+
+		expect(out).toContain('<proposed by="Re" action="remove">');
+		expect(out).toBe(edited);
+	});
+
+	it('still restores an unchanged pending block as the page holds it', () => {
+		const bare = page.replace('<proposed by="Re">\n', '').replace('\n</proposed>', '');
+		const out = wrapProseWithBotProposes(bare, buildLineSet(page), buildBlockSet(page));
+
+		expect(out).toBe(page);
+	});
+});
