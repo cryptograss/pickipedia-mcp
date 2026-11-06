@@ -70,10 +70,13 @@ function stripProposalMarkers(text: string): string {
 	// The tag comes off first. Its payload may itself be a {{Bot_proposes}}
 	// left by an older revision, and peeling outside-in leaves that exposed to
 	// the template match below.
-	const tagged = text.match(/<proposed\b[^>]*>([\s\S]*?)<\/proposed>/i);
-	if (tagged) {
-		text = tagged[1].trim();
-	}
+	// Every tag comes off, each leaving its payload in place: keeping only the
+	// first payload threw away whatever followed the tag, so a block holding a
+	// <proposed> call and then a page's worth of lines had the same key as the
+	// call alone, and an edit to those lines came back as the page was.
+	text = text
+		.replace(/<proposed\b[^>]*>([\s\S]*?)<\/proposed>/gi, (_, inner: string) => inner.trim())
+		.trim();
 
 	// Match {{Bot_proposes|content|by=...}} and extract the content
 	// Handle escaped pipes ({{!}})
@@ -489,12 +492,30 @@ export function computeProtectedLines(lines: string[]): boolean[] {
 
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
+		// The braces that count towards an open template are the ones outside a
+		// protected tag: what a <pre> holds is verbatim, and a <proposed> holds a
+		// whole template call of its own, opened on its first line and closed on
+		// its last. Counting the open line's {{ and then skipping the close line's
+		// }} left the depth at one for the rest of the page, so every line after
+		// an unverified <proposed>{{...}}</proposed> was protected, as one block,
+		// and an edit anywhere below it came back as the page was
+		// (Cryptograss:Emergents/Wake, 5 Nov 2026: a find-replace that saved
+		// nothing). So an open line counts only what precedes the tag, a close
+		// line only what follows it, and a line inside counts nothing.
+		let counted = line;
 
 		// Inside <pre> and friends, through and including the closing tag.
 		if (openTag) {
 			protectedLines[i] = true;
-			if (closingPatternFor(openTag).test(line)) {
-				openTag = null;
+			const close = closingPatternFor(openTag).exec(line);
+			if (!close) {
+				continue;
+			}
+			openTag = null;
+			counted = line.slice(close.index + close[0].length);
+			braceDepth += countOccurrences(counted, '{{') - countOccurrences(counted, '}}');
+			if (braceDepth < 0) {
+				braceDepth = 0;
 			}
 			continue;
 		}
@@ -509,9 +530,11 @@ export function computeProtectedLines(lines: string[]): boolean[] {
 		if (opened) {
 			protectedLines[i] = true;
 			openTag = opened;
+			const open = PROTECTED_TAG_PATTERNS.find((p) => p.tag === opened)!.open.exec(line);
+			counted = open ? line.slice(0, open.index) : '';
 		}
 
-		braceDepth += countOccurrences(line, '{{') - countOccurrences(line, '}}');
+		braceDepth += countOccurrences(counted, '{{') - countOccurrences(counted, '}}');
 		if (braceDepth < 0) {
 			// Unbalanced source; don't let a stray }} protect the rest of the page.
 			braceDepth = 0;

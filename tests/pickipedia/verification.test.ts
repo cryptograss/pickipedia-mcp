@@ -662,3 +662,78 @@ check(
 	!rewrite('Played the\nRyman.', '* Played the Ryman.').includes('\n'),
 	rewrite('Played the\nRyman.', '* Played the Ryman.'),
 );
+
+// A find-replace on Cryptograss:Emergents/Wake saved nothing (magent,
+// #interfaces, 5 Nov 2026). The page held an unverified
+// <proposed by="re">{{Sent to agents|...}}</proposed>: the tag's open line
+// counted its {{ and the close line, skipped as "inside the tag", never counted
+// its }}, so the depth stayed at one and every line after it was protected as
+// one block. That block's key kept only the first <proposed> payload, so the
+// edited block and the stored block had the same key, and the stored one went
+// back: the edit vanished and the wiki said "no change".
+const afterProposed = computeProtectedLines([
+	'<proposed by="re">{{Sent to agents|dial=line|value=reorient|text=What you knew is in the record.',
+	'}}</proposed>',
+	'',
+	"'''typing''': someone is typing.",
+	'{{Sent to agents|dial=line|value=typing|text=Right now, here: {said}.',
+	'}}',
+]);
+check(
+	'a <proposed> around a template call ends with its closing line, not the page',
+	JSON.stringify(afterProposed) === JSON.stringify([true, true, false, false, true, true]),
+	JSON.stringify(afterProposed),
+);
+const preInTemplate = computeProtectedLines([
+	'{{Infobox',
+	'| image = <pre>',
+	'art }} here',
+	'</pre>',
+	'}}',
+	'plain',
+]);
+check(
+	'a <pre> inside a template parameter keeps the template open until its own }}',
+	JSON.stringify(preInTemplate) === JSON.stringify([true, true, true, true, true, false]),
+	JSON.stringify(preInTemplate),
+);
+const wakePage = [
+	'== The words sent ==',
+	'',
+	"'''reorient''': a new Mood's first wake.",
+	'',
+	'<proposed by="re">{{Sent to agents|dial=line|value=reorient|text=What you knew is in the record.',
+	'}}</proposed>',
+	'',
+	"'''typing''': someone is typing.",
+	'',
+	'{{Sent to agents|dial=line|value=typing|text=Right now, here: {said}.',
+	'}}',
+].join('\n');
+const wakeEdited = wakePage.replace(
+	"'''typing''': someone is typing.",
+	"'''local-time''': what time it is where each is.\n\n{{Sent to agents|dial=line|value=local-time|text=Local time: {said}.\n}}\n\n'''typing''': someone is typing.",
+);
+const wakeMarked = wrapProseWithBotProposes(
+	wakeEdited,
+	buildLineSet(wakePage),
+	buildBlockSet(wakePage),
+	'Magent',
+);
+check(
+	'an edit below an unverified <proposed> template call is kept, and marked',
+	wakeMarked.includes('<proposed by="Magent">\n{{Sent to agents|dial=line|value=local-time') &&
+		wakeMarked.includes(
+			"{{Bot_proposes|'''local-time''': what time it is where each is.|by=Magent}}",
+		),
+	wakeMarked,
+);
+check(
+	'and what was there before it goes back as it was, the proposal and all',
+	wakeMarked.includes('<proposed by="re">{{Sent to agents|dial=line|value=reorient') &&
+		wakeMarked.includes(
+			'{{Sent to agents|dial=line|value=typing|text=Right now, here: {said}.\n}}',
+		) &&
+		!wakeMarked.includes('<proposed by="Magent">{{Sent to agents|dial=line|value=typing'),
+	wakeMarked,
+);
