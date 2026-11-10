@@ -1,0 +1,20 @@
+#!/bin/sh
+# pickipedia-mcp's checks, as Jenkins' branches agent runs them (Cryptograss:Moods/ramp/Plan, section 11;
+# maybelle-config's maybelle/jobs/branch-tests.groovy): what `npm run preflight` and CI's mcp-checks run,
+# but for two things the agent can't do. Its only way out is a proxy to GitHub, npm and PyPI:
+#   - validate:server-json fetches its schema from static.modelcontextprotocol.io (and node's fetch doesn't
+#     use the proxy). GitHub's preflight still runs it.
+#   - bundle (the .mcpb) is packaging, not a check.
+set -eu
+need=22.12.0
+have=$(node --version | sed 's/^v//')
+if [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -1)" != "$need" ]; then
+    echo "node $have here; pickipedia-mcp needs >=$need (package.json engines). The agent's image has to catch up."
+    exit 1
+fi
+echo "node v$have, npm $(npm --version)"
+npm ci --no-audit --no-fund
+for step in lint typecheck fmt:check test build check:mcp; do
+    echo "--- $step"
+    npm run -s "$step"
+done
