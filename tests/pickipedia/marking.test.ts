@@ -10,6 +10,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { Mwn } from 'mwn';
 import {
 	buildBlockSet,
+	claimParams,
 	buildLineSet,
 	isExemptPage,
 	markEditParams,
@@ -306,5 +307,78 @@ describe('a proposed removal goes through as written', () => {
 		const out = wrapProseWithBotProposes(bare, buildLineSet(page), buildBlockSet(page));
 
 		expect(out).toBe(page);
+	});
+});
+
+describe("a claim's source and note", () => {
+	// Justin, 10 Nov: the verify dialog should show where a claim came from,
+	// and the review queue group claims by it. Of 349 <proposed> claims on the
+	// wiki that day, one named a source.
+	const lma = 'https://archive.org/details/sgp2023-01-27.flac16';
+
+	it('go on every marker a new page gets, as tag attributes', async () => {
+		const out = await markNewPage(
+			fakeMwn(revision('')),
+			'Banjo',
+			'Sam played it.\n\n{{Record personnel|Sam Grisman}}',
+			{
+				source: lma,
+				note: "the taper's lineup, second line",
+			},
+		);
+		expect(out).toBe(
+			[
+				`<proposed by="Re" source="${lma}" note="the taper's lineup, second line">Sam played it.</proposed>`,
+				'',
+				`<proposed by="Re" source="${lma}" note="the taper's lineup, second line">`,
+				'{{Record personnel|Sam Grisman}}',
+				'</proposed>',
+			].join('\n'),
+		);
+	});
+
+	it('make plain prose a tag, since {{Bot_proposes}} has nowhere for a note', async () => {
+		const out = await markNewPage(fakeMwn(revision('')), 'Banjo', 'A claim.', {
+			note: 'supporting text',
+		});
+		expect(out).toBe('<proposed by="Re" note="supporting text">A claim.</proposed>');
+	});
+
+	it('without either, prose is marked as before', async () => {
+		const out = await markNewPage(fakeMwn(revision('')), 'Banjo', 'A claim.', { source: '  ' });
+		expect(out).toBe('{{Bot_proposes|A claim.|by=Re}}');
+	});
+
+	it('ride in on the edit and never reach the wiki', async () => {
+		const out = await markEditParams(fakeMwn(revision('Old.')), {
+			action: 'edit',
+			title: 'Banjo',
+			text: 'Old.\n\nNew.',
+			...claimParams({ source: 'liner notes', note: 'supporting text' }),
+		});
+		expect(out.text).toBe(
+			'Old.\n\n<proposed by="Re" source="liner notes" note="supporting text">New.</proposed>',
+		);
+		expect(Object.keys(out).filter((k) => k.startsWith('pvclaim'))).toEqual([]);
+	});
+
+	it('are taken out even where nothing is marked', async () => {
+		const out = await markEditParams(fakeMwn(revision('x')), {
+			action: 'edit',
+			title: 'Agent:Re/Hunter',
+			text: 'A note.',
+			...claimParams({ source: lma }),
+		});
+		expect(out).toEqual({ action: 'edit', title: 'Agent:Re/Hunter', text: 'A note.' });
+	});
+
+	it("can't break out of the tag", async () => {
+		const out = await markNewPage(fakeMwn(revision('')), 'Banjo', 'A claim.', {
+			source: 'x"><script>alert(1)</script>',
+			note: 'two\nlines',
+		});
+		expect(out).toBe(
+			'<proposed by="Re" source="x&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;" note="two lines">A claim.</proposed>',
+		);
 	});
 });

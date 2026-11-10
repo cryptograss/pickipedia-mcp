@@ -16,6 +16,18 @@ const inputSchema = {
 		.describe(
 			"Content model of the new page. If omitted, MediaWiki picks the default for the title's namespace.",
 		),
+	claimSource: z
+		.string()
+		.optional()
+		.describe(
+			'Where the claims this edit proposes come from: a URL, or words such as "liner notes". Written onto each claim the edit marks as proposed, so the person verifying sees it and the review queue groups claims by it. PickiPedia only. Split an edit whose claims come from different sources.',
+		),
+	claimNote: z
+		.string()
+		.optional()
+		.describe(
+			'A note on the claims this edit proposes, for the person verifying them: where in the source to look, or "supporting text" for words that only explain the page and cite nothing. PickiPedia only.',
+		),
 	bot: z
 		.boolean()
 		.optional()
@@ -40,7 +52,7 @@ export const createPage: Tool<typeof inputSchema> = {
 	target: (a) => a.title,
 
 	async handle(
-		{ source, title, comment, contentModel, bot },
+		{ source, title, comment, contentModel, bot, claimSource, claimNote },
 		ctx: ToolContext,
 	): Promise<CallToolResult> {
 		const mwn = await ctx.mwn();
@@ -55,7 +67,7 @@ export const createPage: Tool<typeof inputSchema> = {
 		const result = await mwn.create(
 			title,
 			// PickiPedia: a bot's prose goes up marked as proposed (middleware/verification.ts).
-			await markNewPage(mwn, title, source),
+			await markNewPage(mwn, title, source, { source: claimSource, note: claimNote }),
 			formatEditComment(ctx, 'create-page', comment),
 			options,
 		);

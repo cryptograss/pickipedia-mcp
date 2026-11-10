@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Added
+
+- `create-page` and `update-page` take optional `claimSource` and `claimNote` (PickiPedia). Each claim the edit marks as proposed carries them as `source=` and `note=` on its `<proposed>` tag, so the person verifying sees where it came from and the review queue can group by it. A claim with either is always a `<proposed>` tag, since `{{Bot_proposes}}` has nowhere for a note.
+
 ## [0.19.0] - 2026-09-25
 
 ### Added

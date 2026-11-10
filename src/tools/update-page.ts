@@ -6,7 +6,7 @@ import type { ToolContext } from '../runtime/context.ts';
 import { buildPageUrl, formatEditComment } from '../wikis/utils.ts';
 import { contentMaxBytes } from '../results/truncation.ts';
 import { editableChildrenOf } from '../services/sectionSubtree.ts';
-import { isExemptPage, PROPOSED_NOTE } from '../middleware/verification.ts';
+import { claimParams, isExemptPage, PROPOSED_NOTE } from '../middleware/verification.ts';
 
 const OPERATIONS = ['replace', 'append', 'prepend', 'find-replace'] as const;
 type Operation = (typeof OPERATIONS)[number];
@@ -80,6 +80,18 @@ const inputSchema = {
 		.optional()
 		.describe(
 			"Deprecated older spelling of operation='append' and operation='prepend'. Send operation instead.",
+		),
+	claimSource: z
+		.string()
+		.optional()
+		.describe(
+			'Where the claims this edit proposes come from: a URL, or words such as "liner notes". Written onto each claim the edit marks as proposed, so the person verifying sees it and the review queue groups claims by it. PickiPedia only. Split an edit whose claims come from different sources.',
+		),
+	claimNote: z
+		.string()
+		.optional()
+		.describe(
+			'A note on the claims this edit proposes, for the person verifying them: where in the source to look, or "supporting text" for words that only explain the page and cite nothing. PickiPedia only.',
 		),
 	bot: z
 		.boolean()
@@ -361,6 +373,9 @@ async function submitEdit(
 	params: Record<string, string | number | boolean>,
 	args: UpdatePageArgs,
 ): Promise<CallToolResult> {
+	// PickiPedia: where the edit's claims come from, for the markers the
+	// verification middleware writes; it takes these out before sending.
+	params = { ...params, ...claimParams({ source: args.claimSource, note: args.claimNote }) };
 	const response =
 		// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- mwn API response shape; trusted at this boundary
 		(await ctx.edit.submit(mwn, params)) as { edit?: ApiEditResponse } | undefined;

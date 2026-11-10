@@ -136,12 +136,66 @@ function isAlreadyProposed(content: string): boolean {
  * @param {string} content Inline content to mark.
  * @return {string} The content, marked.
  */
-function markInlineContent(content: string, by: string): string {
-	if (content.includes('{{')) {
-		return `<proposed by="${by}">${content}</proposed>`;
+function markInlineContent(content: string, by: ProposerLike): string {
+	// A source or a note travels as tag attributes; {{Bot_proposes}} has
+	// nowhere to put a note, so a claim that carries either is a tag.
+	if (content.includes('{{') || hasDetail(by)) {
+		return `${openTag(by)}${content}</proposed>`;
 	}
 	const escaped = content.replace(/\|/g, '{{!}}');
-	return `{{Bot_proposes|${escaped}|by=${by}}}`;
+	return `{{Bot_proposes|${escaped}|by=${proposer(by).by}}}`;
+}
+
+/**
+ * Who proposes a claim, and what they say about it for the person who will
+ * verify it: the source it came from, and a note ("supporting text" for words
+ * that only explain the page and cite nothing). Justin, 10 Nov: the verify
+ * dialog should show the source right there, and the queue group by it.
+ */
+export interface Proposer {
+	by: string;
+	source?: string;
+	note?: string;
+}
+
+/** A proposer, or just its name, as every caller before source and note passed. */
+export type ProposerLike = string | Proposer;
+
+function proposer(p: ProposerLike): Proposer {
+	return typeof p === 'string' ? { by: p } : p;
+}
+
+function hasDetail(p: ProposerLike): boolean {
+	const { source, note } = proposer(p);
+	return Boolean(source?.trim() || note?.trim());
+}
+
+/**
+ * An attribute value that can't end the attribute or the tag: quotes and
+ * angle brackets escaped, line breaks folded. MediaWiki decodes the entities
+ * when it reads the tag's attributes.
+ */
+function attributeValue(value: string): string {
+	return value
+		.replace(/&/g, '&amp;')
+		.replace(/"/g, '&quot;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/\s*[\r\n]+\s*/g, ' ')
+		.trim();
+}
+
+/** The opening <proposed> tag, with source= and note= where given. */
+function openTag(p: ProposerLike): string {
+	const { by, source, note } = proposer(p);
+	let tag = `<proposed by="${by}"`;
+	if (source?.trim()) {
+		tag += ` source="${attributeValue(source)}"`;
+	}
+	if (note?.trim()) {
+		tag += ` note="${attributeValue(note)}"`;
+	}
+	return `${tag}>`;
 }
 
 /**
@@ -563,7 +617,7 @@ function isListItem(line: string): boolean {
  */
 function wrapListItemContent(
 	line: string,
-	by: string,
+	by: ProposerLike,
 	existingLines?: Map<string, string>,
 ): string {
 	const trimmed = line.trim();
@@ -620,7 +674,7 @@ function wrapListItemContent(
  * @param {string[]} blockLines The template call, as its own lines.
  * @return {string[]} The call, marked.
  */
-function markMarkupBlock(blockLines: string[], by: string): string[] {
+function markMarkupBlock(blockLines: string[], by: ProposerLike): string[] {
 	const text = blockLines.join('\n');
 
 	// Templates that render their own proposed state do it better than a
@@ -634,7 +688,7 @@ function markMarkupBlock(blockLines: string[], by: string): string[] {
 		return injectTemplateStatus(text, template).split('\n');
 	}
 
-	return [`<proposed by="${by}">`, ...blockLines, '</proposed>'];
+	return [openTag(by), ...blockLines, '</proposed>'];
 }
 
 /**
@@ -712,7 +766,7 @@ export function wrapProseWithBotProposes(
 	source: string,
 	existingLines?: Map<string, string>,
 	existingBlocks?: Map<string, string[]>,
-	by = 'Magent',
+	by: ProposerLike = 'Magent',
 ): string {
 	const lines = source.split('\n');
 	const protectedLines = computeProtectedLines(lines);
@@ -881,7 +935,7 @@ function applyVerification(
 	source: string,
 	existingLines?: Map<string, string>,
 	existingBlocks?: Map<string, string[]>,
-	by = 'Magent',
+	by: ProposerLike = 'Magent',
 ): string {
 	const template = getTemplateWithStatus(source);
 
@@ -931,7 +985,11 @@ export const PROPOSED_NOTE =
  * @param {string|null} [previous] What it replaces.
  * @return {string} The wikitext with its proposals marked.
  */
-export function markSource(source: string, previous?: string | null, by = 'Magent'): string {
+export function markSource(
+	source: string,
+	previous?: string | null,
+	by: ProposerLike = 'Magent',
+): string {
 	if (previous === undefined || previous === null) {
 		return applyVerification(source, undefined, undefined, by);
 	}
@@ -989,11 +1047,16 @@ async function findProposer(mwn: Mwn): Promise<string> {
  * @param {string} source Its wikitext.
  * @return {Promise<string>} The wikitext to create it with.
  */
-export async function markNewPage(mwn: Mwn, title: string, source: string): Promise<string> {
+export async function markNewPage(
+	mwn: Mwn,
+	title: string,
+	source: string,
+	claim: ClaimDetail = {},
+): Promise<string> {
 	if (isExemptPage(title)) {
 		return source;
 	}
-	const marked = markSource(source, null, await proposerName(mwn));
+	const marked = markSource(source, null, { by: await proposerName(mwn), ...claim });
 	console.error(
 		`[verification] ${title}: ${marked === source ? 'nothing to mark' : 'new prose marked as proposed'}`,
 	);
@@ -1073,15 +1136,33 @@ export async function markEditParams(
 	mwn: Mwn,
 	params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+	// The claim's source and note ride in with the edit and never leave for
+	// the wiki, whichever way this returns. An edit without them is passed on
+	// as the very object it came as.
+	let claimSource: unknown;
+	let claimNote: unknown;
+	if (CLAIM_PARAMS.source in params || CLAIM_PARAMS.note in params) {
+		const { [CLAIM_PARAMS.source]: src, [CLAIM_PARAMS.note]: note, ...rest } = params;
+		claimSource = src;
+		claimNote = note;
+		params = rest;
+	}
 	const title = params.title;
 	if (params.action !== 'edit' || typeof title !== 'string' || isExemptPage(title)) {
 		return params;
+	}
+	const by: Proposer = { by: await proposerName(mwn) };
+	if (typeof claimSource === 'string' && claimSource.trim()) {
+		by.source = claimSource.trim();
+	}
+	if (typeof claimNote === 'string' && claimNote.trim()) {
+		by.note = claimNote.trim();
 	}
 	for (const field of ['appendtext', 'prependtext']) {
 		const delta = params[field];
 		if (typeof delta === 'string') {
 			console.error(`[verification] ${title}: ${field} marked as proposed`);
-			return { ...params, [field]: markSource(delta, null, await proposerName(mwn)) };
+			return { ...params, [field]: markSource(delta, null, by) };
 		}
 	}
 	if (typeof params.text === 'string') {
@@ -1091,7 +1172,31 @@ export async function markEditParams(
 				? `[verification] ${title}: no previous text to compare; all prose marked`
 				: `[verification] ${title}: marked what the edit adds or changes`,
 		);
-		return { ...params, text: markSource(params.text, previous, await proposerName(mwn)) };
+		return { ...params, text: markSource(params.text, previous, by) };
 	}
 	return params;
+}
+
+/** A claim's source and note, as a write tool takes them. */
+export interface ClaimDetail {
+	source?: string;
+	note?: string;
+}
+
+/**
+ * The edit parameters a claim's source and note travel in, from the tool to
+ * markEditParams(), which takes them out before the edit is sent.
+ */
+export const CLAIM_PARAMS = { source: 'pvclaimsource', note: 'pvclaimnote' } as const;
+
+/** Edit parameters carrying a claim's source and note, for a tool to merge into its edit. */
+export function claimParams(claim: ClaimDetail): Record<string, string> {
+	const out: Record<string, string> = {};
+	if (claim.source?.trim()) {
+		out[CLAIM_PARAMS.source] = claim.source.trim();
+	}
+	if (claim.note?.trim()) {
+		out[CLAIM_PARAMS.note] = claim.note.trim();
+	}
+	return out;
 }
