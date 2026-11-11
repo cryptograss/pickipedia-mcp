@@ -99,6 +99,17 @@ function stripProposalMarkers(text: string): string {
 }
 
 /**
+ * Whether a block is a proposed removal: <proposed action="remove"> round it,
+ * which the wiki's gate reads as "take these lines out once a person agrees".
+ *
+ * @param {string[]} block Lines of one markup block.
+ * @return {boolean} True if the block opens with a removal marker.
+ */
+function isProposedRemoval(block: string[]): boolean {
+	return /^<proposed\b[^>]*\baction\s*=\s*["']?remove\b/i.test(block[0].trim());
+}
+
+/**
  * Whether content already carries a proposal marker of either kind.
  *
  * @param {string} content Inline content, list prefix already removed.
@@ -782,7 +793,17 @@ export function wrapProseWithBotProposes(
 
 			const key = normalizeLine(block.join(' '));
 			const asStored = existingBlocks?.get(key);
-			if (asStored === undefined && isMarkableMarkup(block)) {
+			if (isProposedRemoval(block)) {
+				// A <proposed action="remove"> is a bot asking that this block go.
+				// Its key is the block's bare text, which is also the key of the
+				// block as the page holds it, so the restore-as-stored branch
+				// below would hand back the page's copy and the removal would
+				// vanish before the wiki saw it (re, 4 Nov: three writes to
+				// Magenta:Tour reported no_change, and a bot could neither
+				// reword nor withdraw its own pending step). The wiki's gate
+				// is what judges a removal; it goes through as written.
+				result.push(...block);
+			} else if (asStored === undefined && isMarkableMarkup(block)) {
 				result.push(...markMarkupBlock(block, by));
 			} else {
 				// A block already on the page goes back as the page had it.
