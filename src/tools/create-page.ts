@@ -4,7 +4,7 @@ import type { ApiEditPageParams } from 'types-mediawiki-api';
 import type { Tool } from '../runtime/tool.ts';
 import type { ToolContext } from '../runtime/context.ts';
 import { buildPageUrl, formatEditComment } from '../wikis/utils.ts';
-import { isExemptPage, markNewPage, PROPOSED_NOTE } from '../middleware/verification.ts';
+import { markNewPage, verificationNote } from '../middleware/verification.ts';
 
 const inputSchema = {
 	source: z.string().describe('Page content in the format specified by the contentModel parameter'),
@@ -54,8 +54,8 @@ export const createPage: Tool<typeof inputSchema> = {
 		const options = ctx.edit.applyTags<ApiEditPageParams>(baseOptions);
 		const result = await mwn.create(
 			title,
-			// PickiPedia: a bot's prose goes up marked as proposed (middleware/verification.ts).
-			await markNewPage(mwn, title, source),
+			// PickiPedia: a bot's prose goes up marked as proposed, on a wikitext page (middleware/verification.ts).
+			await markNewPage(mwn, title, source, contentModel),
 			formatEditComment(ctx, 'create-page', comment),
 			options,
 		);
@@ -68,7 +68,7 @@ export const createPage: Tool<typeof inputSchema> = {
 			contentModel: result.contentmodel,
 			...(bot === true ? { botMarked: await ctx.edit.botRight(mwn) } : {}),
 			url: await buildPageUrl(ctx, result.title),
-			...(isExemptPage(result.title) ? {} : { verification: PROPOSED_NOTE }),
+			...verificationNote(result.title, result.contentmodel),
 		});
 	},
 };

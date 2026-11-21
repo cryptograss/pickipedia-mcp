@@ -947,6 +947,82 @@ export const PROPOSED_NOTE =
 	'This edit was marked as proposed where it adds or changes prose, as the wiki requires of bot edits; a person verifies it at Special:VerifyBotEdits.';
 
 /**
+ * The content model `title` has, or would be made with: the wiki says it for
+ * a page not yet made too. Null when it can't be read.
+ *
+ * @param {Mwn} mwn Signed-in client.
+ * @param {string} title The page.
+ * @return {Promise<string|null>}
+ */
+export async function contentModelOf(mwn: Mwn, title: string): Promise<string | null> {
+	try {
+		// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- mwn API response shape; trusted at this boundary
+		const response = (await mwn.request({
+			action: 'query',
+			prop: 'info',
+			titles: title,
+			formatversion: '2',
+		})) as { query?: { pages?: Array<{ contentmodel?: string }> } };
+		const model = response.query?.pages?.[0]?.contentmodel;
+		return typeof model === 'string' && model !== '' ? model : null;
+	} catch (error) {
+		console.error(`[verification] ${title}: could not read its content model: ${String(error)}`);
+		return null;
+	}
+}
+
+/**
+ * The content model that keeps a page from being marked, or null if it is
+ * marked as usual.
+ *
+ * A proposal marker is wikitext. A page that isn't (a ReleaseDraft or a
+ * Release is YAML, and there are JSON, CSS and Lua pages) has nowhere to
+ * put one: the wiki refuses the marked text as invalid, and the edit never
+ * lands (re, uploads-and-embeds, 21 Nov 2026: three lines for a
+ * ReleaseDraft, refused as invalid YAML). The wiki's own gate asks for
+ * markers in the main and Instructions namespaces only, and who may edit a
+ * Release is a matter of its namespace's protection, so nothing the wiki
+ * requires is skipped by sending such a page as written.
+ *
+ * When the model can't be read the page is marked, as before.
+ *
+ * @param {Mwn} mwn Signed-in client.
+ * @param {string} title The page.
+ * @param {unknown} [declared] The content model the edit itself names, if any.
+ * @return {Promise<string|null>}
+ */
+export async function unmarkableModel(
+	mwn: Mwn,
+	title: string,
+	declared?: unknown,
+): Promise<string | null> {
+	const model =
+		typeof declared === 'string' && declared !== '' ? declared : await contentModelOf(mwn, title);
+	return model !== null && model !== 'wikitext' ? model : null;
+}
+
+/**
+ * What a write says about verification, beside the tool's result.
+ *
+ * @param {string} title The page written.
+ * @param {string} [contentModel] Its content model, as the wiki reported it.
+ * @return {{verification?: string}}
+ */
+export function verificationNote(title: string, contentModel?: string): { verification?: string } {
+	if (isExemptPage(title)) {
+		return {};
+	}
+	if (contentModel !== undefined && contentModel !== '' && contentModel !== 'wikitext') {
+		return {
+			verification:
+				`This page is ${contentModel}, not wikitext, so it was saved exactly as written: a proposal marker would have broken it. ` +
+				'It is not in the queue at Special:VerifyBotEdits. Tell a person what you changed, with a link to the revision.',
+		};
+	}
+	return { verification: PROPOSED_NOTE };
+}
+
+/**
  * Mark the new and changed prose of `source`, as against `previous` (the
  * text it replaces, or nothing for a page or a passage that is all new).
  *
@@ -1010,10 +1086,21 @@ async function findProposer(mwn: Mwn): Promise<string> {
  * @param {Mwn} mwn Signed-in client, for who is proposing it.
  * @param {string} title The page.
  * @param {string} source Its wikitext.
- * @return {Promise<string>} The wikitext to create it with.
+ * @param {string} [contentModel] The content model it is being made with, if the caller names one.
+ * @return {Promise<string>} The text to create it with: marked, or as it came for a page that isn't wikitext.
  */
-export async function markNewPage(mwn: Mwn, title: string, source: string): Promise<string> {
+export async function markNewPage(
+	mwn: Mwn,
+	title: string,
+	source: string,
+	contentModel?: string,
+): Promise<string> {
 	if (isExemptPage(title)) {
+		return source;
+	}
+	const unmarkable = await unmarkableModel(mwn, title, contentModel);
+	if (unmarkable !== null) {
+		console.error(`[verification] ${title}: a ${unmarkable} page takes no marker; sent as written`);
 		return source;
 	}
 	const marked = markSource(source, null, await proposerName(mwn));
@@ -1078,7 +1165,8 @@ async function previousText(
 
 /**
  * Mark an action=edit request's new prose before it is sent. Anything else
- * (other actions, exempt pages) passes through as it came.
+ * (other actions, exempt pages, pages that aren't wikitext) passes through
+ * as it came.
  *
  * - `appendtext` / `prependtext` are new in full: every line of them is marked.
  * - `text` replaces the page, or with `section` one section of it: it is
@@ -1098,6 +1186,11 @@ export async function markEditParams(
 ): Promise<Record<string, unknown>> {
 	const title = params.title;
 	if (params.action !== 'edit' || typeof title !== 'string' || isExemptPage(title)) {
+		return params;
+	}
+	const unmarkable = await unmarkableModel(mwn, title, params.contentmodel);
+	if (unmarkable !== null) {
+		console.error(`[verification] ${title}: a ${unmarkable} page takes no marker; sent as written`);
 		return params;
 	}
 	for (const field of ['appendtext', 'prependtext']) {
