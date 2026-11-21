@@ -315,3 +315,5 @@ Contributions are welcome — pull requests and issues (bugs, feature requests, 
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+This fork also carries the Rabbithole Bacon License — see [LICENSE.MD](LICENSE.MD).
