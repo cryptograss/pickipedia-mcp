@@ -15,6 +15,8 @@ import {
 	markEditParams,
 	markNewPage,
 	proposerName,
+	PROPOSED_NOTE,
+	verificationNote,
 	wrapProseWithBotProposes,
 } from '../../src/middleware/verification.ts';
 
@@ -63,7 +65,9 @@ describe('markEditParams', () => {
 		expect(out.appendtext).toBe(
 			'\n\n== History ==\n\n{{Bot_proposes|It came from West Africa.|by=Re}}',
 		);
-		expect(mwn.request).not.toHaveBeenCalled();
+		// It asks what kind of page this is, and never reads the page itself.
+		expect(mwn.request).toHaveBeenCalledTimes(1);
+		expect(mwn.request).toHaveBeenCalledWith(expect.objectContaining({ prop: 'info' }));
 	});
 
 	it('marks a prepend in full', async () => {
@@ -306,5 +310,97 @@ describe('a proposed removal goes through as written', () => {
 		const out = wrapProseWithBotProposes(bare, buildLineSet(page), buildBlockSet(page));
 
 		expect(out).toBe(page);
+	});
+});
+
+/**
+ * re, uploads-and-embeds, 21 Nov 2026: three lines added to a ReleaseDraft
+ * (status, final_cid, finalized_at) went up wrapped in proposal markers, and
+ * the wiki refused the page as invalid YAML. A marker is wikitext; a page
+ * that isn't wikitext is sent as written.
+ */
+describe('a page that is not wikitext is never marked', () => {
+	const DRAFT = 'ReleaseDraft:21408374-b2cc-4bd5-83de-9822f3488bbc';
+	const YAML = 'draft_id: 21408374\ntype: video\nupload_blockheight: 26459469\n';
+	const FINALIZED = YAML + 'status: finalized\nfinal_cid: QmT5VW5\n';
+
+	/** A wiki whose pages have `model`; `content` is what the page holds. */
+	function wiki(model: string | null, content = YAML): Request {
+		return async (params) => {
+			if (params.prop === 'info') {
+				if (model === null) {
+					throw new Error('the wiki is not answering');
+				}
+				return { query: { pages: [{ contentmodel: model }] } };
+			}
+			return { query: { pages: [{ revisions: [{ slots: { main: { content } } }] }] } };
+		};
+	}
+
+	it('sends a replace of a YAML page as written, without reading what it replaces', async () => {
+		const mwn = fakeMwn(wiki('release-draft-yaml'));
+		const params = { action: 'edit', title: DRAFT, text: FINALIZED, summary: 'Finalized' };
+		expect(await markEditParams(mwn, params)).toBe(params);
+		expect(mwn.request).toHaveBeenCalledTimes(1);
+		expect(mwn.request).toHaveBeenCalledWith(
+			expect.objectContaining({ prop: 'info', titles: DRAFT }),
+		);
+	});
+
+	it('sends an append and a prepend to one as written', async () => {
+		for (const field of ['appendtext', 'prependtext']) {
+			const params = { action: 'edit', title: DRAFT, [field]: 'status: finalized\n' };
+			expect(await markEditParams(fakeMwn(wiki('release-draft-yaml')), params)).toBe(params);
+		}
+	});
+
+	it('goes by the model the edit itself names, asking the wiki nothing', async () => {
+		const mwn = fakeMwn(wiki('wikitext'));
+		const params = {
+			action: 'edit',
+			title: 'Banjo/data.json',
+			text: '{"a": 1}',
+			contentmodel: 'json',
+		};
+		expect(await markEditParams(mwn, params)).toBe(params);
+		expect(mwn.request).not.toHaveBeenCalled();
+	});
+
+	it('still marks a wikitext page', async () => {
+		const out = await markEditParams(fakeMwn(wiki('wikitext', 'Old prose.')), {
+			action: 'edit',
+			title: 'Banjo',
+			text: 'Old prose.\n\nNew prose.',
+		});
+		expect(out.text).toBe('Old prose.\n\n{{Bot_proposes|New prose.|by=Re}}');
+	});
+
+	it('marks as before when the model cannot be read', async () => {
+		const out = await markEditParams(fakeMwn(wiki(null)), {
+			action: 'edit',
+			title: 'Banjo',
+			appendtext: 'New prose.',
+		});
+		expect(out.appendtext).toBe('{{Bot_proposes|New prose.|by=Re}}');
+	});
+
+	it('makes a new YAML page as written: by the model named, or the one its namespace gives', async () => {
+		const named = fakeMwn(wiki('wikitext'));
+		expect(await markNewPage(named, 'Banjo/data.json', '{"a": 1}', 'json')).toBe('{"a": 1}');
+		expect(named.request).not.toHaveBeenCalled();
+		expect(await markNewPage(fakeMwn(wiki('release-draft-yaml')), DRAFT, YAML)).toBe(YAML);
+		expect(await markNewPage(fakeMwn(wiki('wikitext')), 'Banjo', 'New prose.')).toBe(
+			'{{Bot_proposes|New prose.|by=Re}}',
+		);
+	});
+
+	it('says so beside the result, since no queue will', () => {
+		expect(verificationNote('Banjo', 'wikitext')).toEqual({ verification: PROPOSED_NOTE });
+		expect(verificationNote('Banjo')).toEqual({ verification: PROPOSED_NOTE });
+		expect(verificationNote('User:Magent/Notes', 'wikitext')).toEqual({});
+		const note = verificationNote(DRAFT, 'release-draft-yaml').verification;
+		expect(note).toContain('release-draft-yaml');
+		expect(note).toContain('saved exactly as written');
+		expect(note).toContain('not in the queue');
 	});
 });
