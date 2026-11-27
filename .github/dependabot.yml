@@ -3,17 +3,42 @@
 # Please see the documentation for all configuration options:
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
+# Grouped, so a wave arrives as one pull request per ecosystem rather than five (Justin, #ramp,
+# 15 Nov: "a boatload of dependency CBs"). #45-#55 and #56-#61 each came one package at a time,
+# and their lockfiles had to be resolved against each other by hand. A group needs applies-to,
+# and one set of rules cannot cover both kinds, so each ecosystem carries two.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+      version:
+        applies-to: version-updates
+        patterns: ["*"]
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+      version:
+        applies-to: version-updates
+        patterns: ["*"]
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+      version:
+        applies-to: version-updates
+        patterns: ["*"]
