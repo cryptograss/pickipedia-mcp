@@ -349,6 +349,28 @@ describe("a claim's source and note", () => {
 		expect(out).toBe('{{Bot_proposes|A claim.|by=Re}}');
 	});
 
+	it('names the parameter when content holds an equals sign, so {{{1}}} gets a value', async () => {
+		const out = await markNewPage(
+			fakeMwn(revision('')),
+			'The Travelin McCourys',
+			'Ronnie McCoury = mandolin.',
+		);
+		expect(out).toBe('{{Bot_proposes|1=Ronnie McCoury = mandolin.|by=Re}}');
+	});
+
+	it('a named parameter is still the same claim: whoever proposed it keeps it', async () => {
+		// Blu proposed it; Re sends the same sentence back. Read as the claim it
+		// is, the line is left as Blu wrote it. Read with the 1= still on the
+		// front it reads as new, and Re's name replaces Blu's.
+		const held = '{{Bot_proposes|1=Ronnie McCoury = mandolin.|by=Blu}}';
+		const out = await markEditParams(fakeMwn(revision(held)), {
+			action: 'edit',
+			title: 'The Travelin McCourys',
+			text: 'Ronnie McCoury = mandolin.',
+		});
+		expect(out.text).toBe(held);
+	});
+
 	it('ride in on the edit and never reach the wiki', async () => {
 		const out = await markEditParams(fakeMwn(revision('Old.')), {
 			action: 'edit',

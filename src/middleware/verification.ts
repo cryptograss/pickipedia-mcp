@@ -79,8 +79,9 @@ function stripProposalMarkers(text: string): string {
 	// Handle escaped pipes ({{!}})
 	const templated = text.match(/\{\{Bot_proposes\|(.+?)\|by=[^}]+\}\}/i);
 	if (templated) {
-		// Unescape pipes
-		text = templated[1].replace(/\{\{!\}\}/g, '|');
+		// Unescape pipes, and drop the 1= that content holding an equals sign
+		// is given, so the same claim compares equal either way round.
+		text = templated[1].replace(/^1=/, '').replace(/\{\{!\}\}/g, '|');
 	}
 
 	// {{verified}} and {{source}} sit *after* the sentence rather than around
@@ -143,7 +144,15 @@ function markInlineContent(content: string, by: ProposerLike): string {
 		return `${openTag(by)}${content}</proposed>`;
 	}
 	const escaped = content.replace(/\|/g, '{{!}}');
-	return `{{Bot_proposes|${escaped}|by=${proposer(by).by}}}`;
+	// A positional parameter is split at its first equals sign, so content
+	// holding one arrives as a named parameter and {{{1}}} is never given a
+	// value: the reader is shown a literal "{{{1}}}" (blu, #connectome,
+	// 27 Nov 2026, four lines of [[Cryptograss:Bacon graphs/Bands]]). Naming
+	// the parameter 1= takes the whole of it, equals signs and all. MediaWiki
+	// trims a named parameter's edges, so only content that needs the name
+	// gets it: prose keeps whatever spacing it was written with.
+	const named = escaped.includes('=') ? '1=' : '';
+	return `{{Bot_proposes|${named}${escaped}|by=${proposer(by).by}}}`;
 }
 
 /**
